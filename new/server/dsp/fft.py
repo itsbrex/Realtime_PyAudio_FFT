@@ -120,6 +120,11 @@ class FFTWorker(threading.Thread):
             with self._lock:
                 wi = self.ring.write_idx
 
+                # Self-heal after a producer reset (ring.reset() on device
+                # hot-switch). See dsp/worker.py for the same pattern.
+                if self.read_block_idx > wi:
+                    self.read_block_idx = 0
+
                 if wi - self.read_block_idx > self.n_blocks_per_window + MAX_BACKLOG_HOPS * self.hop_blocks:
                     target_block = wi - self.n_blocks_per_window
                     skipped_hops = (target_block - self.read_block_idx) // self.hop_blocks

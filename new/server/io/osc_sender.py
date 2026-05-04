@@ -3,28 +3,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
 
 import numpy as np
 from pythonosc.udp_client import SimpleUDPClient
 
+from ..config import OscDest
+
 log = logging.getLogger(__name__)
-
-
-@dataclass
-class OscDest:
-    host: str
-    port: int
 
 
 class OscSender:
     def __init__(self, destinations: list[OscDest]):
-        self._dests = destinations
-        self._clients = [SimpleUDPClient(d.host, d.port) for d in destinations]
-
-    def replace_destinations(self, destinations: list[OscDest]) -> None:
-        self._dests = destinations
-        self._clients = [SimpleUDPClient(d.host, d.port) for d in destinations]
+        self._dests = list(destinations)
+        self._clients = [SimpleUDPClient(d.host, d.port) for d in self._dests]
 
     def send_meta(self, sr: int, blocksize: int, n_fft_bins: int, low_hz: float, high_hz: float) -> None:
         msg = [int(sr), int(blocksize), int(n_fft_bins), float(low_hz), float(high_hz)]

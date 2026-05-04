@@ -53,6 +53,11 @@ class DSPWorker(threading.Thread):
                 return
 
             wi = self.ring.write_idx
+            # Self-heal after a producer reset (ring.reset() on device hot-switch
+            # rewinds write_idx to 0). Without this, read_block_idx stays in the
+            # old monotonic range forever and the worker never advances again.
+            if self.read_block_idx > wi:
+                self.read_block_idx = wi
             if wi - self.read_block_idx > MAX_DSP_BACKLOG_BLOCKS:
                 skipped = (wi - 1) - self.read_block_idx
                 if skipped > 0:

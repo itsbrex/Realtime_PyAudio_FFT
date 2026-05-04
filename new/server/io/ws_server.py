@@ -51,7 +51,8 @@ class WSServer:
 
     def __init__(self, host: str, port: int, snapshot_hz: int,
                  features_store, fft_store, get_meta, get_devices, get_presets,
-                 get_server_status, get_fft_enabled, dispatcher_handle):
+                 get_server_status, get_fft_enabled, dispatcher_handle,
+                 perf_ring: np.ndarray | None = None):
         self.host = host
         self.port = port
         self._snapshot_hz = max(15, min(240, int(snapshot_hz)))
@@ -69,7 +70,8 @@ class WSServer:
         self._status_task: asyncio.Task | None = None
         self._stop = asyncio.Event()
         self._t0 = time.monotonic()
-        self.perf_ring: np.ndarray | None = None  # set by orchestrator (server.main)
+        self.perf_ring: np.ndarray | None = perf_ring
+        self._perf_idx = 0
 
     @property
     def snapshot_hz(self) -> int:
@@ -227,7 +229,12 @@ class WSServer:
         ring[i % ring.shape[0]] = dt_ns
         self._perf_idx = i + 1
 
-    _perf_idx = 0
+    def reset_perf(self) -> None:
+        self._perf_idx = 0
+
+    @property
+    def perf_idx(self) -> int:
+        return self._perf_idx
 
     # ---------------- status loop (2 Hz) ----------------
     async def _status_loop(self):

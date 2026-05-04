@@ -35,6 +35,18 @@ class StreamHandle:
 
 def open_input_stream(device: int | None, blocksize: int, channels: int, callback) -> StreamHandle:
     """Open the input stream and return a handle. Sample rate is device-driven."""
+    # Clamp `channels` to what the device actually exposes — a user with channels=2
+    # in config but a mono mic would otherwise hit a PortAudio error at boot.
+    if device is not None:
+        try:
+            info = sd.query_devices(device)
+            max_in = int(info.get("max_input_channels", 0) or 0)
+            if max_in >= 1 and channels > max_in:
+                log.warning("requested channels=%d but device exposes %d; clamping",
+                            channels, max_in)
+                channels = max_in
+        except Exception as e:
+            log.debug("device probe for channel clamp failed: %s", e)
     stream = sd.InputStream(
         device=device,
         samplerate=None,

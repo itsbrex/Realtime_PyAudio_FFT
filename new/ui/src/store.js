@@ -5,7 +5,6 @@ export const store = {
   low: 0, mid: 0, high: 0,
   low_raw: 0, mid_raw: 0, high_raw: 0,
   fft_bins: null, // Float32Array
-  fft_n_bins: 0,
   fft_db_floor: -80,
   fft_db_ceiling: 0,
 

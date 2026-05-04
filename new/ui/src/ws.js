@@ -71,10 +71,7 @@ function onMsg(ev) {
     const buf = ev.data instanceof ArrayBuffer ? ev.data : null;
     if (buf) {
       const f32 = decodeFftBinary(buf);
-      if (f32) {
-        store.fft_bins = f32;
-        store.fft_n_bins = f32.length;
-      }
+      if (f32) store.fft_bins = f32;
     }
     return;
   }

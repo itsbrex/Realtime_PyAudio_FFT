@@ -30,6 +30,9 @@ onMessage("meta", (m) => {
   store.meta = { ...store.meta, ...m };
   if (m.fft_db_floor !== undefined) store.fft_db_floor = m.fft_db_floor;
   if (m.fft_db_ceiling !== undefined) store.fft_db_ceiling = m.fft_db_ceiling;
+  // When FFT is disabled, drop the last frame so the viz shows "FFT disabled"
+  // instead of a frozen spectrum from the moment of toggle-off.
+  if (m.fft_enabled === false) store.fft_bins = null;
   controls.syncMeta();
 });
 
@@ -61,10 +64,10 @@ onError((reason) => {
 
 // ----- Perf panel rendering -----
 const PERF_ROWS = [
-  { key: "cb",    label: "cb",    period: "block_period_ms" },
-  { key: "dsp",   label: "dsp",   period: "block_period_ms" },
-  { key: "fft",   label: "fft",   period: "hop_period_ms"   },
-  { key: "ws",    label: "ws",    period: "ws_period_ms"    },
+  { key: "cb",  label: "cb"  },
+  { key: "dsp", label: "dsp" },
+  { key: "fft", label: "fft" },
+  { key: "ws",  label: "ws"  },
 ];
 const BROWSER_ROWS = ["raf", "lines", "bars", "scene", "fft"];
 const perfContainer = document.getElementById("perf-rows");

@@ -24,14 +24,14 @@ from .audio import devices as devmod
 from .audio.callback import AudioCallback
 from .audio.ringbuffer import SlotRing
 from .audio.stream import StreamHandle, open_input_stream
-from .config import Config, OscDest, Persister, config_to_dict, load_config
+from .config import Config, Persister, config_to_dict, load_config
 from .control.dispatcher import Dispatcher
 from .dsp.features import AutoScaler, ExpSmoother
 from .dsp.fft import FFTWorker
 from .dsp.filters import FilterBank
 from .dsp.worker import DSPWorker
 from .io.http_server import StaticHTTPServer
-from .io.osc_sender import OscDest as OscDestSender, OscSender, osc_sender_task
+from .io.osc_sender import OscSender, osc_sender_task
 from .io.stores import FFTStore, FeatureStore
 from .io.ws_server import WSServer
 
@@ -118,7 +118,7 @@ class App:
         )
 
     def _signal_dsp_published(self) -> None:
-        """Called from the DSP worker thread on each publish.
+        """Called from the DSP / FFT worker threads on each publish.
 
         Posts sender_event.set() onto the asyncio loop so the OSC sender
         wakes promptly. Schedules from a worker thread, so we use
@@ -132,11 +132,6 @@ class App:
             loop.call_soon_threadsafe(ev.set)
         except RuntimeError:
             pass  # loop closed during shutdown
-
-    def _signal_fft_published(self) -> None:
-        # FFT path has its own pacing on the WS broadcaster; OSC FFT sends
-        # are handled by the same sender_event the DSP path already pings.
-        pass
 
     def start(self) -> None:
         cfg = self.cfg
@@ -202,8 +197,7 @@ class App:
         self.fft_worker.start()
 
         # -------- OSC --------
-        dests = [OscDestSender(host=d.host, port=d.port) for d in cfg.osc.destinations]
-        self.osc_sender = OscSender(dests)
+        self.osc_sender = OscSender(cfg.osc.destinations)
         self.osc_sender.send_meta(
             sr=int(self.stream.samplerate),
             blocksize=cfg.audio.blocksize,
@@ -243,8 +237,8 @@ class App:
                 get_server_status=self.snapshot_server_status,
                 get_fft_enabled=lambda: self.fft_enabled.is_set(),
                 dispatcher_handle=dispatcher,
+                perf_ring=self.perf_ws,
             )
-            self.ws.perf_ring = self.perf_ws
 
             # Static HTTP server for the UI (ES modules need http://, not file://).
             ui_root = (Path(__file__).resolve().parent.parent / "ui")
@@ -386,7 +380,7 @@ class App:
         cb_avg, cb_p95 = self._ring_stats(self.perf_cb,  self.callback.perf_idx if self.callback else 0)
         ds_avg, ds_p95 = self._ring_stats(self.perf_dsp, self.dsp_worker.perf_idx if self.dsp_worker else 0)
         ff_avg, ff_p95 = self._ring_stats(self.perf_fft, self.fft_worker.perf_idx if self.fft_worker else 0)
-        ws_avg, ws_p95 = self._ring_stats(self.perf_ws,  self.ws._perf_idx if self.ws else 0)
+        ws_avg, ws_p95 = self._ring_stats(self.perf_ws,  self.ws.perf_idx if self.ws else 0)
 
         def load(avg_ms, period_ms):
             if period_ms <= 0:
@@ -446,7 +440,7 @@ class App:
             self.dsp_worker.perf_idx = 0
             self.fft_worker.perf_idx = 0
             if self.ws is not None:
-                self.ws._perf_idx = 0
+                self.ws.reset_perf()
 
             # Open new stream
             self.stream = open_input_stream(

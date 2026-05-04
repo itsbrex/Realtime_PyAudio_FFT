@@ -7,7 +7,6 @@ import os
 import tempfile
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import Any
 
 import yaml
 
@@ -83,19 +82,6 @@ class Config:
     fft: FftCfg = field(default_factory=FftCfg)
     osc: OscCfg = field(default_factory=OscCfg)
     ws: WsCfg = field(default_factory=WsCfg)
-
-
-def _coerce_dataclass(cls, src: dict, defaults):
-    """Build a dataclass instance from src, falling back to defaults for missing/invalid."""
-    if not isinstance(src, dict):
-        return defaults
-    out = {}
-    for f in defaults.__dataclass_fields__.values():
-        if f.name in src:
-            out[f.name] = src[f.name]
-        else:
-            out[f.name] = getattr(defaults, f.name)
-    return cls(**out)
 
 
 def load_config(path: Path | str) -> Config:
