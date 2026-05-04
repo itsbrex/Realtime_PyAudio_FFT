@@ -29,9 +29,18 @@ class AudioCfg:
 
 
 @dataclass
+class BandCfg:
+    lo_hz: float
+    hi_hz: float
+
+
+@dataclass
 class DspCfg:
-    low_hz: float = 250.0
-    high_hz: float = 4000.0
+    # Three independent bandpass bands. Defaults: low cuts sub-rumble below 30 Hz;
+    # high caps at 16 kHz to avoid empty top-octave on most consumer mics.
+    low: BandCfg = field(default_factory=lambda: BandCfg(30.0, 250.0))
+    mid: BandCfg = field(default_factory=lambda: BandCfg(250.0, 4000.0))
+    high: BandCfg = field(default_factory=lambda: BandCfg(4000.0, 16000.0))
     tau: dict = field(default_factory=lambda: {"low": 0.15, "mid": 0.06, "high": 0.02})
 
 
@@ -84,6 +93,14 @@ class Config:
     ws: WsCfg = field(default_factory=WsCfg)
 
 
+def _bands_dict(cfg: DspCfg) -> dict:
+    return {
+        "low":  {"lo_hz": cfg.low.lo_hz,  "hi_hz": cfg.low.hi_hz},
+        "mid":  {"lo_hz": cfg.mid.lo_hz,  "hi_hz": cfg.mid.hi_hz},
+        "high": {"lo_hz": cfg.high.lo_hz, "hi_hz": cfg.high.hi_hz},
+    }
+
+
 def load_config(path: Path | str) -> Config:
     path = Path(path)
     cfg = Config()
@@ -118,12 +135,36 @@ def load_config(path: Path | str) -> Config:
     # dsp - validate as if it were a control message; bad values fall back
     d_raw = raw.get("dsp", {}) or {}
     sr_guess = 48000.0  # validation here uses a guess; real sr applies on retune
-    try:
-        if "low_hz" in d_raw and "high_hz" in d_raw:
-            lo, hi = V.validate_band_cutoffs(d_raw["low_hz"], d_raw["high_hz"], sr_guess)
-            cfg.dsp.low_hz, cfg.dsp.high_hz = lo, hi
-    except Exception as e:
-        log.warning("config dsp.low_hz/high_hz invalid (%s); using defaults", e)
+
+    bands_raw = {k: d_raw.get(k) for k in ("low", "mid", "high") if isinstance(d_raw.get(k), dict)}
+    if len(bands_raw) == 3:
+        try:
+            ok = V.validate_bands(bands_raw, sr_guess)
+            cfg.dsp.low  = BandCfg(*ok["low"])
+            cfg.dsp.mid  = BandCfg(*ok["mid"])
+            cfg.dsp.high = BandCfg(*ok["high"])
+        except Exception as e:
+            log.warning("config dsp bands invalid (%s); using defaults", e)
+    elif "low_hz" in d_raw and "high_hz" in d_raw:
+        # Migrate legacy LP/BP/HP cutoffs into three bandpasses.
+        try:
+            lo = float(d_raw["low_hz"])
+            hi = float(d_raw["high_hz"])
+            low_floor = 30.0
+            high_ceiling = min(16000.0, 0.45 * sr_guess - 1.0)
+            migrated = {
+                "low":  {"lo_hz": low_floor, "hi_hz": lo},
+                "mid":  {"lo_hz": lo,        "hi_hz": hi},
+                "high": {"lo_hz": hi,        "hi_hz": high_ceiling},
+            }
+            ok = V.validate_bands(migrated, sr_guess)
+            cfg.dsp.low  = BandCfg(*ok["low"])
+            cfg.dsp.mid  = BandCfg(*ok["mid"])
+            cfg.dsp.high = BandCfg(*ok["high"])
+            log.info("migrated legacy dsp.low_hz/high_hz to 3-bandpass schema")
+        except Exception as e:
+            log.warning("config dsp legacy migration failed (%s); using defaults", e)
+
     try:
         if "tau" in d_raw:
             cfg.dsp.tau = {**cfg.dsp.tau, **V.validate_tau(d_raw["tau"])}

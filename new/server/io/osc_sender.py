@@ -17,8 +17,14 @@ class OscSender:
         self._dests = list(destinations)
         self._clients = [SimpleUDPClient(d.host, d.port) for d in self._dests]
 
-    def send_meta(self, sr: int, blocksize: int, n_fft_bins: int, low_hz: float, high_hz: float) -> None:
-        msg = [int(sr), int(blocksize), int(n_fft_bins), float(low_hz), float(high_hz)]
+    def send_meta(self, sr: int, blocksize: int, n_fft_bins: int, bands: dict) -> None:
+        # Payload: [sr, blocksize, n_fft_bins, low_lo, low_hi, mid_lo, mid_hi, high_lo, high_hi]
+        msg = [
+            int(sr), int(blocksize), int(n_fft_bins),
+            float(bands["low"][0]),  float(bands["low"][1]),
+            float(bands["mid"][0]),  float(bands["mid"][1]),
+            float(bands["high"][0]), float(bands["high"][1]),
+        ]
         for c in self._clients:
             try:
                 c.send_message("/audio/meta", msg)

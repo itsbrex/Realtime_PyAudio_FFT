@@ -6,27 +6,46 @@ import re
 
 MIN_HZ = 20.0
 MIN_GAP_HZ = 50.0
+BAND_NAMES = ("low", "mid", "high")
 
 
 def _is_number(x):
     return isinstance(x, (int, float)) and not isinstance(x, bool)
 
 
-def validate_band_cutoffs(low_hz, high_hz, sr):
-    if not (_is_number(low_hz) and _is_number(high_hz) and _is_number(sr)):
-        raise ValueError("cutoffs must be numeric")
-    low_hz = float(low_hz)
-    high_hz = float(high_hz)
+def validate_band(name, lo_hz, hi_hz, sr):
+    """Validate a single bandpass: MIN_HZ ≤ lo_hz, hi_hz > lo_hz + MIN_GAP_HZ, hi_hz ≤ 0.45·sr."""
+    if not (_is_number(lo_hz) and _is_number(hi_hz) and _is_number(sr)):
+        raise ValueError(f"{name}: cutoffs must be numeric")
+    lo_hz = float(lo_hz)
+    hi_hz = float(hi_hz)
     sr = float(sr)
-    if not (math.isfinite(low_hz) and math.isfinite(high_hz)):
-        raise ValueError("non-finite cutoff")
-    if low_hz < MIN_HZ:
-        raise ValueError(f"low_hz must be >= {MIN_HZ}")
-    if high_hz <= low_hz + MIN_GAP_HZ:
-        raise ValueError(f"high_hz must be > low_hz + {MIN_GAP_HZ}")
-    if high_hz > 0.45 * sr:
-        raise ValueError(f"high_hz must be <= 0.45*sr ({0.45 * sr:.0f} Hz)")
-    return low_hz, high_hz
+    if not (math.isfinite(lo_hz) and math.isfinite(hi_hz)):
+        raise ValueError(f"{name}: non-finite cutoff")
+    if lo_hz < MIN_HZ:
+        raise ValueError(f"{name}: lo_hz must be >= {MIN_HZ}")
+    if hi_hz <= lo_hz + MIN_GAP_HZ:
+        raise ValueError(f"{name}: hi_hz must be > lo_hz + {MIN_GAP_HZ}")
+    if hi_hz > 0.45 * sr:
+        raise ValueError(f"{name}: hi_hz must be <= 0.45*sr ({0.45 * sr:.0f} Hz)")
+    return lo_hz, hi_hz
+
+
+def validate_bands(bands_dict, sr):
+    """Validate {low: {lo_hz, hi_hz}, mid: {...}, high: {...}}. Returns {name: (lo, hi)}.
+
+    Bands may overlap or leave gaps — that's intentional. Each band is validated
+    independently against MIN_HZ and 0.45·sr.
+    """
+    if not isinstance(bands_dict, dict):
+        raise ValueError("bands must be a dict")
+    out = {}
+    for name in BAND_NAMES:
+        b = bands_dict.get(name)
+        if not isinstance(b, dict):
+            raise ValueError(f"missing band {name!r}")
+        out[name] = validate_band(name, b.get("lo_hz"), b.get("hi_hz"), sr)
+    return out
 
 
 def validate_tau(tau_dict):

@@ -100,12 +100,19 @@ class App:
         self._device_switch_lock: asyncio.Lock | None = None
 
     # ----------------- starting up -----------------
+    def _bands_tuple_dict(self) -> dict:
+        d = self.cfg.dsp
+        return {
+            "low":  (d.low.lo_hz,  d.low.hi_hz),
+            "mid":  (d.mid.lo_hz,  d.mid.hi_hz),
+            "high": (d.high.lo_hz, d.high.hi_hz),
+        }
+
     def _build_pipeline_for_sr(self, sr: float) -> None:
         cfg = self.cfg
         self.filter_bank = FilterBank(
             sr=sr,
-            low_hz=cfg.dsp.low_hz,
-            high_hz=cfg.dsp.high_hz,
+            bands=self._bands_tuple_dict(),
             blocksize=cfg.audio.blocksize,
         )
         self.smoother = ExpSmoother(sr=sr, blocksize=cfg.audio.blocksize, tau=cfg.dsp.tau)
@@ -202,8 +209,7 @@ class App:
             sr=int(self.stream.samplerate),
             blocksize=cfg.audio.blocksize,
             n_fft_bins=cfg.fft.n_bins,
-            low_hz=cfg.dsp.low_hz,
-            high_hz=cfg.dsp.high_hz,
+            bands=self._bands_tuple_dict(),
         )
         self.osc_task = self.loop.create_task(
             osc_sender_task(
@@ -286,8 +292,11 @@ class App:
             "sr": int(self.current_sr()),
             "blocksize": cfg.audio.blocksize,
             "n_fft_bins": cfg.fft.n_bins,
-            "low_hz": cfg.dsp.low_hz,
-            "high_hz": cfg.dsp.high_hz,
+            "bands": {
+                "low":  {"lo_hz": cfg.dsp.low.lo_hz,  "hi_hz": cfg.dsp.low.hi_hz},
+                "mid":  {"lo_hz": cfg.dsp.mid.lo_hz,  "hi_hz": cfg.dsp.mid.hi_hz},
+                "high": {"lo_hz": cfg.dsp.high.lo_hz, "hi_hz": cfg.dsp.high.hi_hz},
+            },
             "fft_enabled": self.fft_enabled.is_set(),
             "fft_db_floor": cfg.fft.db_floor,
             "fft_db_ceiling": cfg.fft.db_ceiling,
@@ -337,9 +346,10 @@ class App:
             "name": name,
             "saved_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "dsp": {
-                "low_hz": cfg.dsp.low_hz,
-                "high_hz": cfg.dsp.high_hz,
-                "tau": dict(cfg.dsp.tau),
+                "low":  {"lo_hz": cfg.dsp.low.lo_hz,  "hi_hz": cfg.dsp.low.hi_hz},
+                "mid":  {"lo_hz": cfg.dsp.mid.lo_hz,  "hi_hz": cfg.dsp.mid.hi_hz},
+                "high": {"lo_hz": cfg.dsp.high.lo_hz, "hi_hz": cfg.dsp.high.hi_hz},
+                "tau":  dict(cfg.dsp.tau),
             },
             "autoscale": {
                 "tau_release_s": cfg.autoscale.tau_release_s,
@@ -405,15 +415,19 @@ class App:
         }
 
     # ----------------- mutators called from dispatcher -----------------
-    def schedule_filter_retune(self, low_hz: float, high_hz: float) -> None:
-        """Server-side 50ms debounce of cutoff retunes."""
+    def schedule_filter_retune(self) -> None:
+        """Server-side 50ms debounce of cutoff retunes.
+
+        Reads cfg.dsp at fire time so multiple per-band updates within the
+        debounce window collapse into a single retune of the latest state.
+        """
         loop = self.loop
         if loop is None:
             return
         if self._filter_retune_handle is not None:
             self._filter_retune_handle.cancel()
         self._filter_retune_handle = loop.call_later(
-            0.05, lambda: self.filter_bank.retune(low_hz, high_hz)
+            0.05, lambda: self.filter_bank.retune(self._bands_tuple_dict())
         )
 
     async def hot_switch_device(self, new_idx: int) -> None:
@@ -454,8 +468,7 @@ class App:
             # Rebuild filter + autoscaler + smoother for new sr (alphas depend on sr)
             self.filter_bank = FilterBank(
                 sr=new_sr,
-                low_hz=self.cfg.dsp.low_hz,
-                high_hz=self.cfg.dsp.high_hz,
+                bands=self._bands_tuple_dict(),
                 blocksize=self.cfg.audio.blocksize,
             )
             self.smoother = ExpSmoother(
@@ -490,8 +503,7 @@ class App:
                 sr=int(new_sr),
                 blocksize=self.cfg.audio.blocksize,
                 n_fft_bins=self.cfg.fft.n_bins,
-                low_hz=self.cfg.dsp.low_hz,
-                high_hz=self.cfg.dsp.high_hz,
+                bands=self._bands_tuple_dict(),
             )
 
     # ----------------- shutdown -----------------

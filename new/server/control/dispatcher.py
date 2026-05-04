@@ -47,16 +47,17 @@ class Dispatcher:
         self.app.persister.request(commit=True)
         return [], [{"type": "meta", **self.app.snapshot_meta()}]
 
-    async def _set_band_cutoffs(self, msg):
-        lo = msg.get("low_hz")
-        hi = msg.get("high_hz")
+    async def _set_band(self, msg):
+        band = msg.get("band")
+        if band not in ("low", "mid", "high"):
+            raise ValueError("band must be 'low', 'mid', or 'high'")
         commit = bool(msg.get("commit", True))
         sr = self.app.current_sr()
-        lo, hi = V.validate_band_cutoffs(lo, hi, sr)
-        # Server-side debounce: drop any pending retune; schedule new one in 50ms.
-        self.app.schedule_filter_retune(lo, hi)
-        self.app.cfg.dsp.low_hz = lo
-        self.app.cfg.dsp.high_hz = hi
+        lo, hi = V.validate_band(band, msg.get("lo_hz"), msg.get("hi_hz"), sr)
+        # Mutate cfg, then schedule a debounced retune that reads cfg at fire time.
+        getattr(self.app.cfg.dsp, band).lo_hz = lo
+        getattr(self.app.cfg.dsp, band).hi_hz = hi
+        self.app.schedule_filter_retune()
         self.app.persister.request(commit=commit)
         return [], [{"type": "meta", **self.app.snapshot_meta()}]
 
@@ -143,14 +144,17 @@ class Dispatcher:
         applied: list[str] = []
         # dsp
         d = data.get("dsp", {}) or {}
-        if "low_hz" in d and "high_hz" in d:
+        bands_raw = {k: d.get(k) for k in ("low", "mid", "high") if isinstance(d.get(k), dict)}
+        if len(bands_raw) == 3:
             try:
-                lo, hi = V.validate_band_cutoffs(d["low_hz"], d["high_hz"], sr)
-                self.app.schedule_filter_retune(lo, hi)
-                self.app.cfg.dsp.low_hz, self.app.cfg.dsp.high_hz = lo, hi
-                applied.append("dsp.cutoffs")
+                ok = V.validate_bands(bands_raw, sr)
+                for name, (lo, hi) in ok.items():
+                    cfg_band = getattr(self.app.cfg.dsp, name)
+                    cfg_band.lo_hz, cfg_band.hi_hz = lo, hi
+                self.app.schedule_filter_retune()
+                applied.append("dsp.bands")
             except ValueError as e:
-                log.warning("preset dsp cutoffs invalid: %s", e)
+                log.warning("preset dsp bands invalid: %s", e)
         if "tau" in d:
             try:
                 tau = V.validate_tau(d["tau"])
@@ -212,7 +216,7 @@ class Dispatcher:
 
     _handlers = {
         "set_fft": _set_fft,
-        "set_band_cutoffs": _set_band_cutoffs,
+        "set_band": _set_band,
         "set_smoothing": _set_smoothing,
         "set_autoscale": _set_autoscale,
         "list_devices": _list_devices,

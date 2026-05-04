@@ -99,7 +99,7 @@ DSP runs once per audio block (256 samples ≈ 5.3ms at 48k). FFT runs once per 
 
 - **WS JSON**: `meta`, `snapshot` (L/M/H raw + scaled), `devices`, `presets`, `server_status`, `error`. Inbound types are listed in `Dispatcher._handlers`.
 - **WS binary** (FFT): `[type=1:u8][reserved:u8][n_bins:u16 LE][float32 * n_bins LE]` — see `encode_fft_binary` / `decodeFftBinary` in `ui/src/ws.js`.
-- **OSC**: `/audio/meta [sr, blocksize, n_fft_bins, low_hz, high_hz]`, `/audio/lmh [low, mid, high]` (scaled, per audio block), `/audio/fft [...bins]` (only when `osc.send_fft` is true and FFT is enabled).
+- **OSC**: `/audio/meta [sr, blocksize, n_fft_bins, low_lo, low_hi, mid_lo, mid_hi, high_lo, high_hi]` — three independent bandpasses, edges in Hz. `/audio/lmh [low, mid, high]` (scaled, per audio block). `/audio/fft [...bins]` (only when `osc.send_fft` is true and FFT is enabled).
 
 ### Config / validation
 

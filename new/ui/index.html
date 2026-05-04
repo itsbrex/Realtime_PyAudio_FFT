@@ -31,7 +31,7 @@
           <canvas id="viz-scene" width="640" height="200"></canvas>
         </div>
         <div class="viz-card">
-          <div class="viz-title">FFT (log-x, dB) <label class="inline"><input type="checkbox" id="fft-toggle" /> enable</label></div>
+          <div class="viz-title">FFT (log-x, dB) <label class="inline" title="Enable / disable the FFT worker. Disabling saves CPU when you only need L/M/H."><input type="checkbox" id="fft-toggle" /> enable</label></div>
           <canvas id="viz-fft" width="640" height="200"></canvas>
         </div>
       </section>
@@ -45,24 +45,29 @@
         </fieldset>
 
         <fieldset>
-          <legend>Cross-overs</legend>
-          <label>low_hz <input type="range" id="low-hz" min="40" max="2000" step="1" data-log="1" /> <span id="low-hz-val"></span></label>
-          <label>high_hz <input type="range" id="high-hz" min="1000" max="10000" step="1" data-log="1" /> <span id="high-hz-val"></span></label>
+          <legend>Bandpass edges</legend>
+          <div id="freq-axis" title="Drag a colored region to shift it; drag its left/right handle to move just that edge. Bands may overlap."></div>
+          <label title="LOW bandpass — bottom edge. Set above the noise/rumble floor (e.g. 30 Hz) to keep DC and sub-bass rumble out of the LOW output.">low.lo <input type="range" id="low-lo"  min="20"   max="500"   step="1" data-log="1" /> <span id="low-lo-val"></span></label>
+          <label title="LOW bandpass — top edge. Boundary above which LOW energy rolls off.">low.hi <input type="range" id="low-hi"  min="50"   max="2000"  step="1" data-log="1" /> <span id="low-hi-val"></span></label>
+          <label title="MID bandpass — bottom edge.">mid.lo <input type="range" id="mid-lo"  min="100"  max="4000"  step="1" data-log="1" /> <span id="mid-lo-val"></span></label>
+          <label title="MID bandpass — top edge.">mid.hi <input type="range" id="mid-hi"  min="500"  max="8000"  step="1" data-log="1" /> <span id="mid-hi-val"></span></label>
+          <label title="HIGH bandpass — bottom edge.">high.lo <input type="range" id="high-lo" min="1000" max="12000" step="1" data-log="1" /> <span id="high-lo-val"></span></label>
+          <label title="HIGH bandpass — top edge. Cap the air/sibilance region; many consumer mics roll off above ~16 kHz.">high.hi <input type="range" id="high-hi" min="2000" max="22000" step="1" data-log="1" /> <span id="high-hi-val"></span></label>
         </fieldset>
 
         <fieldset>
           <legend>Smoothing tau (ms)</legend>
-          <label>low <input type="range" id="tau-low"  min="5" max="2000" step="1" data-log="1" /> <span id="tau-low-val"></span></label>
-          <label>mid <input type="range" id="tau-mid"  min="5" max="2000" step="1" data-log="1" /> <span id="tau-mid-val"></span></label>
-          <label>high <input type="range" id="tau-high" min="5" max="2000" step="1" data-log="1" /> <span id="tau-high-val"></span></label>
+          <label title="Time constant of the LOW band's exponential smoother. Larger = lazier / smoother response, smaller = snappier / more reactive.">low <input type="range" id="tau-low"  min="5" max="2000" step="1" data-log="1" /> <span id="tau-low-val"></span></label>
+          <label title="Time constant of the MID band's exponential smoother. Larger = lazier, smaller = snappier.">mid <input type="range" id="tau-mid"  min="5" max="2000" step="1" data-log="1" /> <span id="tau-mid-val"></span></label>
+          <label title="Time constant of the HIGH band's exponential smoother. Larger = lazier, smaller = snappier.">high <input type="range" id="tau-high" min="5" max="2000" step="1" data-log="1" /> <span id="tau-high-val"></span></label>
         </fieldset>
 
         <fieldset>
           <legend>Auto-scaler</legend>
-          <label>window (s) <input type="range" id="autoscale-tau" min="5" max="300" step="1" data-log="1" /> <span id="autoscale-tau-val"></span></label>
-          <label>noise gate <input type="range" id="autoscale-floor" min="0" max="1000" step="1" /> <span id="autoscale-floor-val"></span></label>
-          <label>strength <input type="range" id="autoscale-strength" min="0" max="100" step="1" /> <span id="autoscale-strength-val"></span></label>
-          <div class="raw-strip">
+          <label title="Release time of the rolling peak follower. Longer windows hold loud peaks longer, so quieter passages stay visible. Snaps to multiples of 10 s.">window (s) <input type="range" id="autoscale-tau" min="10" max="300" step="1" data-log="1" /> <span id="autoscale-tau-val"></span></label>
+          <label title="Soft noise gate: signals below this RMS are treated as silence (the auto-scaler won't try to amplify them). Shown in dBFS.">noise gate <input type="range" id="autoscale-floor" min="0" max="1000" step="1" /> <span id="autoscale-floor-val"></span></label>
+          <label title="Blend between auto-scaled (1.0) and raw (0.0) output. 100% lets the auto-scaler fully normalize per-band; 0% disables it.">strength <input type="range" id="autoscale-strength" min="0" max="100" step="1" /> <span id="autoscale-strength-val"></span></label>
+          <div class="raw-strip" title="Raw per-band RMS (pre auto-scaler). Useful to see how 'hot' the input is and to set the noise gate.">
             raw:
             <span class="raw-bar"><span class="raw-bar-fill" id="raw-low"></span></span>
             <span class="raw-bar"><span class="raw-bar-fill" id="raw-mid"></span></span>
@@ -72,7 +77,7 @@
 
         <fieldset>
           <legend>WS snapshot rate</legend>
-          <label>hz <input type="range" id="ws-hz" min="15" max="240" step="1" data-log="1" /> <span id="ws-hz-val"></span></label>
+          <label title="How often the server pushes L/M/H snapshots and FFT frames to the browser. Higher = smoother visuals, more bandwidth.">hz <input type="range" id="ws-hz" min="15" max="240" step="1" data-log="1" /> <span id="ws-hz-val"></span></label>
         </fieldset>
 
         <fieldset>

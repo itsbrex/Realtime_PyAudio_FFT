@@ -109,10 +109,13 @@ function renderPerfPanel() {
                  r.key === "fft" && stage.enabled === false);
     }
   }
-  // Browser side
+  // Browser side. raf_ms is the inter-frame interval (~16.67ms at 60fps),
+  // not work time — so display "% over budget" instead of "% of budget",
+  // which lights up only when frames are actually dropped.
   const raf_avg = avgRing(store.raf_ms_ring);
   const raf_p95 = p95Ring(store.raf_ms_ring);
-  setPerfRow("b_raf", raf_avg, raf_p95, (raf_avg / 16.667) * 100, false);
+  const raf_load = Math.max(0, (raf_avg - 16.667) / 16.667 * 100);
+  setPerfRow("b_raf", raf_avg, raf_p95, raf_load, false);
   for (const k of ["lines", "bars", "scene", "fft"]) {
     const v = store.viz_perf[k];
     if (!v) continue;

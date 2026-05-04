@@ -13,8 +13,11 @@ export const store = {
     sr: 48000,
     blocksize: 256,
     n_fft_bins: 128,
-    low_hz: 250,
-    high_hz: 4000,
+    bands: {
+      low:  { lo_hz: 30,   hi_hz: 250   },
+      mid:  { lo_hz: 250,  hi_hz: 4000  },
+      high: { lo_hz: 4000, hi_hz: 16000 },
+    },
     fft_enabled: false,
     tau: { low: 0.15, mid: 0.06, high: 0.02 },
     autoscale: { tau_release_s: 60, noise_floor: 0.001, strength: 1.0 },

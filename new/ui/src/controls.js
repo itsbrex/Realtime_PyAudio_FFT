@@ -3,6 +3,7 @@
 
 import { store } from "./store.js";
 import { send } from "./ws.js";
+import { makeFreqAxis } from "./freq_axis.js";
 
 const PRESET_NAME_RE = /^[a-zA-Z0-9_\- ]+$/;
 
@@ -25,10 +26,25 @@ function writeSlider(el, v) {
   else el.value = String(v);
 }
 
-function bindDragAware(el, label, fmt, getMsg) {
+// Snap a frequency to a "nice" multiple that scales with f. Step doubles each
+// octave: ~8 below 320 Hz, 16 by 640 Hz, 32 by 1.3k, 64 by 2.5k, 128 above 5k.
+export function snapHz(f) {
+  const step = Math.min(128, Math.max(8, Math.pow(2, Math.round(Math.log2(f / 40)))));
+  return Math.max(step, Math.round(f / step) * step);
+}
+// Snap seconds to nearest multiple of 10 (min 10s).
+export function snapSec(s) {
+  return Math.max(10, Math.round(s / 10) * 10);
+}
+
+function bindDragAware(el, label, fmt, getMsg, snapFn) {
   let dragging = false;
-  const update = (commit) => {
+  const read = () => {
     const v = readSlider(el);
+    return snapFn ? snapFn(v) : v;
+  };
+  const update = (commit) => {
+    const v = read();
     label.textContent = fmt(v);
     const msg = getMsg(v);
     if (msg) send({ ...msg, commit });
@@ -40,20 +56,37 @@ function bindDragAware(el, label, fmt, getMsg) {
   };
   el.addEventListener("change", commit);
   el.addEventListener("pointerup", commit);
-  return { setValue: (v) => { writeSlider(el, v); label.textContent = fmt(v); } };
+  return {
+    read,
+    setValue: (v) => { writeSlider(el, v); label.textContent = fmt(v); },
+  };
 }
 
 export function setupControls() {
-  // Cutoffs
-  const lowEl  = document.getElementById("low-hz");
-  const highEl = document.getElementById("high-hz");
-  const lowLab = document.getElementById("low-hz-val");
-  const highLab = document.getElementById("high-hz-val");
+  // Visual frequency-axis picker (drag colored regions / their edges).
+  const freqAxis = makeFreqAxis(
+    document.getElementById("freq-axis"),
+    () => store.meta.sr || 48000,
+  );
+
+  // Band edges — three independent bandpasses, each with lo/hi sliders.
   const fmtHz = (v) => `${Math.round(v)} Hz`;
-  const lowCtl = bindDragAware(lowEl, lowLab, fmtHz,
-    () => ({ type: "set_band_cutoffs", low_hz: readSlider(lowEl), high_hz: readSlider(highEl) }));
-  const highCtl = bindDragAware(highEl, highLab, fmtHz,
-    () => ({ type: "set_band_cutoffs", low_hz: readSlider(lowEl), high_hz: readSlider(highEl) }));
+  const bandCtls = {};
+  for (const band of ["low", "mid", "high"]) {
+    const loEl  = document.getElementById(`${band}-lo`);
+    const hiEl  = document.getElementById(`${band}-hi`);
+    const loLab = document.getElementById(`${band}-lo-val`);
+    const hiLab = document.getElementById(`${band}-hi-val`);
+    const sendBand = () => ({
+      type: "set_band",
+      band,
+      lo_hz: loCtl.read(),
+      hi_hz: hiCtl.read(),
+    });
+    const loCtl = bindDragAware(loEl, loLab, fmtHz, sendBand, snapHz);
+    const hiCtl = bindDragAware(hiEl, hiLab, fmtHz, sendBand, snapHz);
+    bandCtls[band] = { lo: loCtl, hi: hiCtl };
+  }
 
   // Tau (UI in ms; protocol in seconds)
   const tauEls = {
@@ -83,7 +116,7 @@ export function setupControls() {
   const tauRelEl  = document.getElementById("autoscale-tau");
   const tauRelLab = document.getElementById("autoscale-tau-val");
   const tauRelCtl = bindDragAware(tauRelEl, tauRelLab, (v) => `${Math.round(v)} s`,
-    (v) => ({ type: "set_autoscale", tau_release_s: v }));
+    (v) => ({ type: "set_autoscale", tau_release_s: v }), snapSec);
 
   const floorEl  = document.getElementById("autoscale-floor");
   const floorLab = document.getElementById("autoscale-floor-val");
@@ -165,8 +198,14 @@ export function setupControls() {
   return {
     syncMeta() {
       const m = store.meta;
-      lowCtl.setValue(m.low_hz);
-      highCtl.setValue(m.high_hz);
+      const bands = m.bands || {};
+      for (const band of ["low", "mid", "high"]) {
+        const b = bands[band];
+        if (!b) continue;
+        bandCtls[band].lo.setValue(b.lo_hz);
+        bandCtls[band].hi.setValue(b.hi_hz);
+      }
+      freqAxis.syncBands(bands);
       tauCtls.low.setValue((m.tau.low || 0) * 1000);
       tauCtls.mid.setValue((m.tau.mid || 0) * 1000);
       tauCtls.high.setValue((m.tau.high || 0) * 1000);

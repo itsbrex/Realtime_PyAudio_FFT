@@ -185,13 +185,11 @@ class WSServer:
         last_feat_seq = 0
         last_fft_seq = 0
         while not self._stop.is_set():
-            t_start = time.perf_counter_ns()
             await asyncio.sleep(1.0 / max(self._snapshot_hz, 1))
             if self._stop.is_set():
                 return
+            t_start = time.perf_counter_ns()
             if not self.clients:
-                if self.perf_ring is not None:
-                    self._record_perf(time.perf_counter_ns() - t_start)
                 continue
             # L/M/H snapshot
             seq, raw, scaled = self.features_store.read()
