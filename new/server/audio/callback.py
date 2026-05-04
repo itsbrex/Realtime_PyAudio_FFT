@@ -1,0 +1,48 @@
+"""Hot-path audio callback: memcpy + ring write + signal. No allocation."""
+from __future__ import annotations
+
+import threading
+import time
+
+import numpy as np
+
+
+class AudioCallback:
+    """Stateful callable. PortAudio invokes __call__ from its C thread.
+
+    Per call:
+      1. Sticky-check status.input_overflow -> bump cb_overruns.
+      2. Mono-mix (if stereo) into preallocated mono_buf via two in-place ufuncs.
+      3. ring.write_block(mono_buf) — single np.copyto + two int stores.
+      4. dsp_event.set(); fft_event.set() (cheap; no alloc).
+    """
+
+    def __init__(self, ring, dsp_event: threading.Event, fft_event: threading.Event,
+                 channels: int, blocksize: int, perf_ring: np.ndarray):
+        self.ring = ring
+        self.dsp_event = dsp_event
+        self.fft_event = fft_event
+        self.channels = channels
+        self.blocksize = blocksize
+        self.mono_buf = np.zeros(blocksize, dtype=np.float32)
+        self.cb_overruns = 0
+        self.perf_ring = perf_ring  # int64 ns-deltas; len must be power-of-two friendly
+        self.perf_len = perf_ring.shape[0]
+        self.perf_idx = 0
+
+    def __call__(self, in_data, frames, time_info, status):
+        t0 = time.perf_counter_ns()
+        if status and getattr(status, "input_overflow", False):
+            self.cb_overruns += 1
+        if self.channels == 1:
+            np.copyto(self.mono_buf, in_data[:, 0])
+        else:
+            np.add(in_data[:, 0], in_data[:, 1], out=self.mono_buf)
+            np.multiply(self.mono_buf, 0.5, out=self.mono_buf)
+        self.ring.write_block(self.mono_buf)
+        self.dsp_event.set()
+        self.fft_event.set()
+        t1 = time.perf_counter_ns()
+        i = self.perf_idx
+        self.perf_ring[i % self.perf_len] = t1 - t0
+        self.perf_idx = i + 1

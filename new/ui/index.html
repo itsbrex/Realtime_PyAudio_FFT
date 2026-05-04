@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Realtime Audio Server — UI</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <h1>Realtime Audio Server</h1>
+      <div class="badges">
+        <span class="badge" id="ws-status">disconnected</span>
+        <span class="badge" id="server-fps">srv 0 Hz</span>
+        <span class="badge" id="ui-fps">ui 0 fps</span>
+      </div>
+    </header>
+
+    <main class="grid">
+      <section class="viz-grid">
+        <div class="viz-card">
+          <div class="viz-title">L/M/H rolling lines</div>
+          <canvas id="viz-lines" width="640" height="200"></canvas>
+        </div>
+        <div class="viz-card">
+          <div class="viz-title">L/M/H bars + peak hold</div>
+          <canvas id="viz-bars" width="320" height="200"></canvas>
+        </div>
+        <div class="viz-card">
+          <div class="viz-title">L/M/H scene</div>
+          <canvas id="viz-scene" width="640" height="200"></canvas>
+        </div>
+        <div class="viz-card">
+          <div class="viz-title">FFT (log-x, dB) <label class="inline"><input type="checkbox" id="fft-toggle" /> enable</label></div>
+          <canvas id="viz-fft" width="640" height="200"></canvas>
+        </div>
+      </section>
+
+      <aside class="controls">
+        <fieldset>
+          <legend>Input device</legend>
+          <select id="device-select"></select>
+          <button id="device-refresh">refresh</button>
+          <button id="device-probe">probe</button>
+        </fieldset>
+
+        <fieldset>
+          <legend>Cross-overs</legend>
+          <label>low_hz <input type="range" id="low-hz" min="40" max="2000" step="1" data-log="1" /> <span id="low-hz-val"></span></label>
+          <label>high_hz <input type="range" id="high-hz" min="1000" max="10000" step="1" data-log="1" /> <span id="high-hz-val"></span></label>
+        </fieldset>
+
+        <fieldset>
+          <legend>Smoothing tau (ms)</legend>
+          <label>low <input type="range" id="tau-low"  min="5" max="2000" step="1" data-log="1" /> <span id="tau-low-val"></span></label>
+          <label>mid <input type="range" id="tau-mid"  min="5" max="2000" step="1" data-log="1" /> <span id="tau-mid-val"></span></label>
+          <label>high <input type="range" id="tau-high" min="5" max="2000" step="1" data-log="1" /> <span id="tau-high-val"></span></label>
+        </fieldset>
+
+        <fieldset>
+          <legend>Auto-scaler</legend>
+          <label>window (s) <input type="range" id="autoscale-tau" min="5" max="300" step="1" data-log="1" /> <span id="autoscale-tau-val"></span></label>
+          <label>noise gate <input type="range" id="autoscale-floor" min="0" max="1000" step="1" /> <span id="autoscale-floor-val"></span></label>
+          <label>strength <input type="range" id="autoscale-strength" min="0" max="100" step="1" /> <span id="autoscale-strength-val"></span></label>
+          <div class="raw-strip">
+            raw:
+            <span class="raw-bar"><span class="raw-bar-fill" id="raw-low"></span></span>
+            <span class="raw-bar"><span class="raw-bar-fill" id="raw-mid"></span></span>
+            <span class="raw-bar"><span class="raw-bar-fill" id="raw-high"></span></span>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>WS snapshot rate</legend>
+          <label>hz <input type="range" id="ws-hz" min="15" max="240" step="1" data-log="1" /> <span id="ws-hz-val"></span></label>
+        </fieldset>
+
+        <fieldset>
+          <legend>Presets</legend>
+          <div class="row">
+            <input type="text" id="preset-name" placeholder="preset name" maxlength="64" />
+            <button id="preset-save">save</button>
+          </div>
+          <div class="row">
+            <select id="preset-list"></select>
+            <button id="preset-load">load</button>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>Performance</legend>
+          <div id="perf-rows"></div>
+          <div class="counters">
+            <span>cb_overruns: <b id="cb_overruns">0</b></span>
+            <span>dsp_drops: <b id="dsp_drops">0</b></span>
+            <span>fft_drops: <b id="fft_drops">0</b></span>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>Errors</legend>
+          <div id="err-log" class="err-log"></div>
+        </fieldset>
+      </aside>
+    </main>
+
+    <script type="module" src="src/main.js"></script>
+  </body>
+</html>

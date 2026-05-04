@@ -1,0 +1,36 @@
+audio:
+  device:
+    name: MacBook Pro Microphone
+    index: 1
+  blocksize: 256
+  channels: 1
+dsp:
+  low_hz: 246.4531167360074
+  high_hz: 5000.345349769783
+  tau:
+    low: 0.15
+    mid: 0.06
+    high: 0.02
+autoscale:
+  tau_release_s: 60.0
+  noise_floor: 0.0031855013000000004
+  strength: 1.0
+fft:
+  enabled: true
+  n_bins: 128
+  window_size: 1024
+  hop: 512
+  f_min: 30.0
+  db_floor: -80.0
+  db_ceiling: 0.0
+osc:
+  destinations:
+  - host: 127.0.0.1
+    port: 9000
+  send_fft: false
+ws:
+  enabled: true
+  host: 127.0.0.1
+  port: 8765
+  snapshot_hz: 60
+  http_port: 8766

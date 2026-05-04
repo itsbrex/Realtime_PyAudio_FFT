@@ -1,0 +1,29 @@
+[project]
+name = "realtime-audio-server"
+version = "1.0.0"
+description = "Realtime audio feature server: L/M/H + FFT over OSC and WebSocket"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=2.0",
+    "scipy>=1.11",
+    "sounddevice>=0.4.6",
+    "python-osc>=1.8",
+    "websockets>=14,<17",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[project.scripts]
+audio-server = "server.main:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["server*"]
