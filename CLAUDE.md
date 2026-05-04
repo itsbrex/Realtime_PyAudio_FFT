@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository layout
 
-This directory (`new/`) is a ground-up rewrite of the legacy PyGame analyzer that lives at the repo root (`../run_FFT_analyzer.py`, `../src/`). The legacy code is reference-only — all real work happens here. The design is documented in detail in `realtime_audio_server_plan.md`; if behavior in code seems surprising, the plan is the authoritative source for *why*.
+The design is documented in detail in `realtime_audio_server_plan.md`; if behavior in code seems surprising, the plan is the authoritative source for *why*.
 
 ```
 server/      # Python audio-server package (entry point: server.main:main)
@@ -119,5 +119,4 @@ Plain ES modules, no build step, no framework. `ui/index.html` loads `src/main.j
 ## Things not to do
 
 - Don't add tests under `tests/` blindly — the directories exist but no fixtures or shared conftest is set up yet. Ask before scaffolding test infra.
-- Don't import from the legacy `../src/` tree. It uses PyAudio + PyGame and a totally different threading model.
 - Don't add a build step to `ui/`. The whole point is that it's hackable static files.

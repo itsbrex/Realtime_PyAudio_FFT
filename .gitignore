@@ -1,2 +1,15 @@
 .DS_Store
-src/__pycache__/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+.pytest_cache/
+.venv/
+venv/
+build/
+dist/
+
+# Saved presets (config.yaml itself is checked in as the default state)
+preset-*.yaml

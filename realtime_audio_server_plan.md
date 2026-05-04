@@ -424,7 +424,7 @@ The asyncio sender polls `read()` on a `loop_signal` set by `loop.call_soon_thre
 ## 5. Project layout
 
 ```
-new/
+.
 ├── realtime_audio_server_plan.md   ← this file
 ├── pyproject.toml                  ← uv / pip-installable
 ├── config.yaml                     ← persisted UI state (created on first save)
