@@ -1,26 +1,68 @@
 // Spatially-separated L/M/H scene:
-//   low  -> central glowing disc (radius + brightness)
-//   mid  -> ring around the disc  (radius offset + thickness + alpha)
-//   high -> particles radiating outward from the disc (speed + alpha)
-// Each band gets its own region so the eye can read them independently,
-// while motion (particles) carries the high band — easier to perceive
-// than dot density alone.
+//   low  -> central glowing disc (radius + alpha grow with low)
+//   mid  -> full-screen background color hue (alpha grows with mid)
+//   high -> bright random noise sprinkled across the screen (count + alpha
+//           grow with high), resampled fresh every frame
+// Layering (bottom -> top): dark base, mid hue tint, low disc, high noise.
 
 import { store, recordVizPerf } from "../store.js";
 import { LMH } from "../colors.js";
 
-const N_PARTICLES = 200;
+// ─────────────────────────────────────────────────────────────────────────
+// Tuning. All visual knobs live here — tweak freely.
+// ─────────────────────────────────────────────────────────────────────────
+const CONFIG = {
+  bgColor: "#0a0b0d",
+
+  low: {
+    // Radius scales with low: lowR = baseR * (radiusBase + radiusGain*lo) * radiusScale
+    // baseR = 0.5 * min(w, h). radiusScale=1.25 makes the disc 25% larger.
+    radiusScale: 1.25,
+    radiusBase:  0.15,
+    radiusGain:  0.40,
+    // Outer alpha of the disc gradient. lo=0 -> alphaMin (invisible),
+    // lo=1 -> alphaMax. Inner stop scales by midStopAlphaScale.
+    alphaMin: 0.1,
+    alphaMax: 0.9,
+    saturation:    80,   // %
+    lightnessMin:  25,   // % at lo=0
+    lightnessMax:  75,   // % at lo=1
+    midStop:           0.65,  // gradient stop position [0..1]
+    midStopAlphaScale: 0.5,
+  },
+
+  mid: {
+    // Full-screen tint behind everything else. Alpha = alphaMin..alphaMax
+    // mapped from md=0..1. Even at alpha=1, low/high paint over it so it
+    // never visually dominates.
+    alphaMin: 0.0,
+    alphaMax: 0.85,
+    saturation: 45,   // %
+    lightness:  20,   // % — kept dim so a full-alpha tint doesn't blind
+  },
+
+  high: {
+    // Random sample count scales with hi.
+    minPoints: 100,
+    maxPoints: 500,
+    // Per-point alpha scales with hi (alphaMin at hi=0, alphaMax at hi=1).
+    alphaMin: 0.0,
+    alphaMax: 1.0,
+    // Visual point size in CSS pixels (multiplied by devicePixelRatio).
+    pointSize: 2.0,
+    // 0 = uniform across screen, 1 = strong push toward edges.
+    // We bias outward by rejection sampling against an acceptance prob
+    // that grows with normalized distance from center.
+    edgeBias: 1.5,
+    // Color: bright/whitish on the high hue so they read as sparkles.
+    saturation: 50,  // %
+    lightness:  90,   // %
+  },
+};
+// ─────────────────────────────────────────────────────────────────────────
 
 export function makeScene(canvas) {
   const ctx = canvas.getContext("2d", { alpha: false });
-
-  // Particle pool, pre-allocated.
-  const px  = new Float32Array(N_PARTICLES);
-  const py  = new Float32Array(N_PARTICLES);
-  const pvx = new Float32Array(N_PARTICLES);
-  const pvy = new Float32Array(N_PARTICLES);
-  let initialized = false;
-  let lastT = performance.now();
 
   function fitCanvas() {
     const dpr = window.devicePixelRatio || 1;
@@ -29,25 +71,7 @@ export function makeScene(canvas) {
     const h = Math.max(1, Math.floor(r.height * dpr));
     if (canvas.width !== w || canvas.height !== h) {
       canvas.width = w; canvas.height = h;
-      initialized = false;
     }
-  }
-
-  function spawn(i, cx, cy, r0) {
-    const a = Math.random() * Math.PI * 2;
-    const r = r0 * (0.6 + Math.random() * 0.4);
-    px[i] = cx + Math.cos(a) * r;
-    py[i] = cy + Math.sin(a) * r;
-    const speed = 30 + Math.random() * 90;
-    pvx[i] = Math.cos(a) * speed;
-    pvy[i] = Math.sin(a) * speed;
-  }
-
-  function initParticles(w, h) {
-    const cx = w / 2, cy = h / 2;
-    const r0 = Math.min(w, h) * 0.15;
-    for (let i = 0; i < N_PARTICLES; i++) spawn(i, cx, cy, r0);
-    initialized = true;
   }
 
   function draw() {
@@ -55,65 +79,66 @@ export function makeScene(canvas) {
     fitCanvas();
     const w = canvas.width, h = canvas.height;
     const dpr = window.devicePixelRatio || 1;
-    if (!initialized) initParticles(w, h);
-
-    const now = performance.now();
-    // Cap dt so backgrounded tabs don't fling all particles off-screen.
-    const dt = Math.min(0.05, (now - lastT) / 1000);
-    lastT = now;
 
     const lo = Math.max(0, Math.min(1, store.low));
     const md = Math.max(0, Math.min(1, store.mid));
     const hi = Math.max(0, Math.min(1, store.high));
 
-    // Background.
-    ctx.fillStyle = "#0a0b0d";
-    ctx.fillRect(0, 0, w, h);
-
     const cx = w / 2, cy = h / 2;
     const baseR = Math.min(w, h) * 0.5;
 
-    // --- LOW: central disc with radial gradient. ---
-    const lowR = baseR * (0.15 + 0.40 * lo);
-    const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, lowR);
-    const light = 28 + 50 * lo;                // 28..78
-    const alpha = 0.35 + 0.55 * lo;            // 0.35..0.90
-    grad.addColorStop(0,    `hsla(${LMH.low.hue}, 80%, ${light}%, ${alpha})`);
-    grad.addColorStop(0.65, `hsla(${LMH.low.hue}, 80%, ${light}%, ${alpha * 0.5})`);
-    grad.addColorStop(1,    `hsla(${LMH.low.hue}, 80%, ${light}%, 0)`);
-    ctx.fillStyle = grad;
-    ctx.beginPath();
-    ctx.arc(cx, cy, lowR, 0, Math.PI * 2);
-    ctx.fill();
+    // --- Layer 0: solid dark background. ---
+    ctx.fillStyle = CONFIG.bgColor;
+    ctx.fillRect(0, 0, w, h);
 
-    // --- MID: ring just outside the disc. ---
-    if (md > 0.02) {
-      const midR  = lowR + baseR * (0.04 + 0.18 * md);
-      const ringW = Math.max(1, baseR * 0.06 * md);
-      ctx.strokeStyle = `hsla(${LMH.mid.hue}, 55%, 60%, ${0.3 + 0.6 * md})`;
-      ctx.lineWidth = ringW;
+    // --- Layer 1: MID full-screen tint (base hue, behind everything). ---
+    const midAlpha = CONFIG.mid.alphaMin + (CONFIG.mid.alphaMax - CONFIG.mid.alphaMin) * md;
+    if (midAlpha > 0.001) {
+      ctx.fillStyle = `hsla(${LMH.mid.hue}, ${CONFIG.mid.saturation}%, ${CONFIG.mid.lightness}%, ${midAlpha})`;
+      ctx.fillRect(0, 0, w, h);
+    }
+
+    // --- Layer 2: LOW central disc with radial gradient. ---
+    const lowR = baseR * (CONFIG.low.radiusBase + CONFIG.low.radiusGain * lo) * CONFIG.low.radiusScale;
+    const lowAlpha = CONFIG.low.alphaMin + (CONFIG.low.alphaMax - CONFIG.low.alphaMin) * lo;
+    if (lowAlpha > 0.001 && lowR > 0.5) {
+      const light = CONFIG.low.lightnessMin + (CONFIG.low.lightnessMax - CONFIG.low.lightnessMin) * lo;
+      const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, lowR);
+      grad.addColorStop(0,                  `hsla(${LMH.low.hue}, ${CONFIG.low.saturation}%, ${light}%, ${lowAlpha})`);
+      grad.addColorStop(CONFIG.low.midStop, `hsla(${LMH.low.hue}, ${CONFIG.low.saturation}%, ${light}%, ${lowAlpha * CONFIG.low.midStopAlphaScale})`);
+      grad.addColorStop(1,                  `hsla(${LMH.low.hue}, ${CONFIG.low.saturation}%, ${light}%, 0)`);
+      ctx.fillStyle = grad;
       ctx.beginPath();
-      ctx.arc(cx, cy, midR, 0, Math.PI * 2);
-      ctx.stroke();
+      ctx.arc(cx, cy, lowR, 0, Math.PI * 2);
+      ctx.fill();
     }
 
-    // --- HIGH: particles drifting outward from the disc. ---
-    // Speed scales with hi; particles always exist so position state is stable
-    // when hi drops back up — they just slow to a near-stop.
-    const speedScale = 0.25 + 3.5 * hi;
-    const maxR2 = (Math.hypot(w, h) * 0.5 + 8) ** 2;
-    const r0    = lowR;                                  // respawn radius
-    const sz    = Math.max(1, Math.round(1.5 * dpr));
-    ctx.fillStyle = `rgba(${LMH.high.rgb}, ${0.25 + 0.7 * hi})`;
-    ctx.beginPath();
-    for (let i = 0; i < N_PARTICLES; i++) {
-      px[i] += pvx[i] * dt * speedScale;
-      py[i] += pvy[i] * dt * speedScale;
-      const dx = px[i] - cx, dy = py[i] - cy;
-      if (dx * dx + dy * dy > maxR2) spawn(i, cx, cy, r0);
-      ctx.rect(px[i] | 0, py[i] | 0, sz, sz);
+    // --- Layer 3: HIGH bright random noise (resampled every frame). ---
+    const hiAlpha = CONFIG.high.alphaMin + (CONFIG.high.alphaMax - CONFIG.high.alphaMin) * hi;
+    if (hiAlpha > 0.001) {
+      const nPoints = Math.round(CONFIG.high.minPoints + (CONFIG.high.maxPoints - CONFIG.high.minPoints) * hi);
+      const sz = Math.max(1, Math.round(CONFIG.high.pointSize * dpr));
+      const halfW = w * 0.5, halfH = h * 0.5;
+      const bias = CONFIG.high.edgeBias;
+      ctx.fillStyle = `hsla(${LMH.high.hue}, ${CONFIG.high.saturation}%, ${CONFIG.high.lightness}%, ${hiAlpha})`;
+      ctx.beginPath();
+      for (let i = 0; i < nPoints; i++) {
+        // Rejection sample with edge-biased acceptance, capped attempts so
+        // we never loop forever in pathological cases.
+        let x = 0, y = 0;
+        for (let attempt = 0; attempt < 4; attempt++) {
+          x = Math.random() * w;
+          y = Math.random() * h;
+          const dx = (x - cx) / halfW;
+          const dy = (y - cy) / halfH;
+          const d = Math.min(1, Math.sqrt(dx * dx + dy * dy));
+          const accept = (1 - bias) + bias * d;
+          if (Math.random() < accept) break;
+        }
+        ctx.rect(x | 0, y | 0, sz, sz);
+      }
+      ctx.fill();
     }
-    ctx.fill();
 
     recordVizPerf("scene", performance.now() - t0);
   }
