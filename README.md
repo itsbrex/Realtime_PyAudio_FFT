@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/screenshot.webp" alt="Realtime Audio Feature Server screenshot" width="80%">
+  <img src="assets/screenshot.webp" alt="Realtime Audio Feature Server screenshot" width="95%">
 </p>
 
 # Realtime Audio Feature Server
