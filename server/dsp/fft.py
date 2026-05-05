@@ -11,6 +11,12 @@ log = logging.getLogger(__name__)
 
 MAX_BACKLOG_HOPS = 2
 EPS = 1e-12
+# Sentinel for log bins with no rfft bin mapped (happens at the low end where
+# rfft frequency resolution is coarser than the log spacing). Chosen far below
+# any physically achievable dB value (rfft of EPS clamps at -240 dB) so the UI
+# can distinguish "empty bin" from "very quiet real measurement". OSC sender
+# replaces this with db_floor before transmitting to keep the wire contract.
+EMPTY_BIN_SENTINEL = -1000.0
 
 
 def build_log_bin_map(window_size: int, sr: float, n_bins: int, f_min: float):
@@ -49,7 +55,7 @@ class FFTWorker(threading.Thread):
                  stop_flag: threading.Event, fft_store, on_publish,
                  blocksize: int, sr: float, window_size: int, hop: int,
                  n_bins: int, f_min: float, perf_ring: np.ndarray,
-                 db_floor: float = -80.0):
+                 db_floor: float = -60.0):
         super().__init__(name="fft-worker", daemon=True)
         self.ring = ring
         self.fft_event = fft_event
@@ -162,7 +168,7 @@ class FFTWorker(threading.Thread):
                 # of "0 dB", which the UI would otherwise paint as max.
                 np.multiply(bins, self._bin_count_inv, out=bins)
                 if self._bin_empty_mask.any():
-                    bins[self._bin_empty_mask] = self.db_floor
+                    bins[self._bin_empty_mask] = EMPTY_BIN_SENTINEL
                 self.fft_store.publish(bins)
                 try:
                     self.on_publish()

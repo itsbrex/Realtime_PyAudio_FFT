@@ -58,7 +58,7 @@ class FftCfg:
     window_size: int = 1024
     hop: int = 512
     f_min: float = 30.0
-    db_floor: float = -80.0
+    db_floor: float = -60.0
     db_ceiling: float = 0.0
 
 

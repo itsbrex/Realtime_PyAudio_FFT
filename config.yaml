@@ -7,13 +7,13 @@ audio:
 dsp:
   low:
     lo_hz: 104.0
-    hi_hz: 312.0
+    hi_hz: 232.0
   mid:
     lo_hz: 512.0
-    hi_hz: 1728.0
+    hi_hz: 2112.0
   high:
-    lo_hz: 3520.0
-    hi_hz: 11520.0
+    lo_hz: 4096.0
+    hi_hz: 13184.0
   tau:
     low: 0.04007222664388595
     mid: 0.025309699827756167
@@ -28,7 +28,7 @@ fft:
   window_size: 1024
   hop: 512
   f_min: 30.0
-  db_floor: -80.0
+  db_floor: -60.0
   db_ceiling: 0.0
 osc:
   destinations:

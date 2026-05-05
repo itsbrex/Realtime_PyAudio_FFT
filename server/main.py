@@ -220,6 +220,7 @@ class App:
                 fft_store=self.fft_store,
                 get_send_fft=lambda: self.cfg.osc.send_fft,
                 get_fft_enabled=lambda: self.fft_enabled.is_set(),
+                get_db_floor=lambda: self.cfg.fft.db_floor,
             ),
             name="osc-sender",
         )

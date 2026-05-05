@@ -53,13 +53,46 @@ export function makeFft(canvas) {
     }
 
     if (!peaks || peaks.length !== n) peaks = new Float32Array(n);
-    const floor = store.fft_db_floor || -80;
-    const ceiling = store.fft_db_ceiling || 0;
+    // Display-only spectral tilt: +4.5 dB/oct pivoted at 1 kHz. When on, we
+    // also widen the y-axis (lower floor, higher ceiling) to absorb the
+    // tilt's swing across the band so highs don't clip and lows don't sink.
+    // OSC/WS payloads are untouched.
+    const tiltOn = store.fft_tilt_enabled;
+    const metaPre = store.meta || {};
+    const fMinTilt = metaPre.fft?.f_min ?? 30;
+    const fMaxTilt = (metaPre.sr ?? 48000) / 2;
+    const logFminTilt = Math.log10(fMinTilt);
+    const logSpanTilt = Math.max(1e-6, Math.log10(fMaxTilt) - logFminTilt);
+    const TILT_DB_PER_OCT = 4.5;
+    const LOG10_2 = Math.log10(2);
+
+    let floor = store.fft_db_floor || -60;
+    let ceiling = store.fft_db_ceiling || 0;
+    if (tiltOn) {
+      const octBelow1k = Math.max(0, (3 - logFminTilt) / LOG10_2); // log2(1000/fMin)
+      const octAbove1k = Math.max(0, (Math.log10(fMaxTilt) - 3) / LOG10_2); // log2(fMax/1000)
+      floor -= TILT_DB_PER_OCT * octBelow1k;
+      ceiling += TILT_DB_PER_OCT * octAbove1k;
+    }
     const span = Math.max(1, ceiling - floor);
 
+    // Server uses a deeply-negative sentinel (-1000 dB) for log bins with no
+    // rfft bin mapped to them; real measurements clamp at -240 dB worst case.
+    const SENTINEL_THRESHOLD = -500;
     const barW = w / n;
     for (let i = 0; i < n; i++) {
-      const db = bins[i];
+      const raw = bins[i];
+      if (raw < SENTINEL_THRESHOLD) {
+        peaks[i] = Math.max(0, peaks[i] - 0.6 * dt);
+        continue;
+      }
+      let db = raw;
+      if (tiltOn) {
+        // log-spaced bin centers: f = 10^(logFmin + (i+0.5)/n * logSpan)
+        const logF = logFminTilt + ((i + 0.5) / n) * logSpanTilt;
+        const octavesFrom1k = (logF - 3) / LOG10_2; // log2(f/1000)
+        db += TILT_DB_PER_OCT * octavesFrom1k;
+      }
       const v = Math.max(0, Math.min(1, (db - floor) / span));
       // peak hold
       if (v > peaks[i]) peaks[i] = v;

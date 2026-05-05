@@ -31,7 +31,7 @@
           <canvas id="viz-scene" width="640" height="200"></canvas>
         </div>
         <div class="viz-card">
-          <div class="viz-title">FFT (log-x, dB) <label class="inline" title="Enable / disable the FFT worker. Disabling saves CPU when you only need L/M/H."><input type="checkbox" id="fft-toggle" /> enable</label></div>
+          <div class="viz-title">FFT (log-x, dB) <label class="inline" title="Enable / disable the FFT worker. Disabling saves CPU when you only need L/M/H."><input type="checkbox" id="fft-toggle" /> enable</label> <label class="inline" title="Apply a +4.5 dB/octave visual tilt (referenced to 1 kHz) so music with a typical pink-ish spectrum reads roughly flat. Display-only — OSC and the WS payload still carry honest dB."><input type="checkbox" id="fft-tilt" checked /> tilt</label></div>
           <canvas id="viz-fft" width="640" height="200"></canvas>
         </div>
       </section>

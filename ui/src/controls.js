@@ -159,6 +159,13 @@ export function setupControls() {
     send({ type: "set_fft", enabled: fftToggle.checked });
   });
 
+  // FFT display tilt (UI-only; OSC/WS payload stays honest dB)
+  const fftTilt = document.getElementById("fft-tilt");
+  store.fft_tilt_enabled = fftTilt.checked;
+  fftTilt.addEventListener("change", () => {
+    store.fft_tilt_enabled = fftTilt.checked;
+  });
+
   // Devices
   const deviceSelect = document.getElementById("device-select");
   document.getElementById("device-refresh").addEventListener("click", () => send({ type: "list_devices", probe: false }));

@@ -8,6 +8,7 @@ import numpy as np
 from pythonosc.udp_client import SimpleUDPClient
 
 from ..config import OscDest
+from ..dsp.fft import EMPTY_BIN_SENTINEL
 
 log = logging.getLogger(__name__)
 
@@ -39,9 +40,13 @@ class OscSender:
             except Exception as e:
                 log.debug("osc lmh send failed: %s", e)
 
-    def send_fft(self, bins: np.ndarray) -> None:
-        # OSC 'f' tag is 32-bit float; cast once.
-        payload = np.asarray(bins, dtype=np.float32).tolist()
+    def send_fft(self, bins: np.ndarray, db_floor: float) -> None:
+        # OSC 'f' tag is 32-bit float; cast once. Replace the empty-bin sentinel
+        # with db_floor so OSC consumers see a normal in-range value.
+        arr = np.asarray(bins, dtype=np.float32)
+        if (arr <= EMPTY_BIN_SENTINEL * 0.5).any():
+            arr = np.where(arr <= EMPTY_BIN_SENTINEL * 0.5, np.float32(db_floor), arr)
+        payload = arr.tolist()
         for c in self._clients:
             try:
                 c.send_message("/audio/fft", payload)
@@ -50,7 +55,8 @@ class OscSender:
 
 
 async def osc_sender_task(stop, sender_event: asyncio.Event, sender: OscSender,
-                          features_store, fft_store, get_send_fft, get_fft_enabled):
+                          features_store, fft_store, get_send_fft, get_fft_enabled,
+                          get_db_floor):
     """Wakes on sender_event; sends one /audio/lmh per audio block."""
     last_seq = 0
     last_fft_seq = 0
@@ -70,4 +76,4 @@ async def osc_sender_task(stop, sender_event: asyncio.Event, sender: OscSender,
             fseq, frame = fft_store.read()
             if fseq != last_fft_seq and frame is not None:
                 last_fft_seq = fseq
-                sender.send_fft(frame)
+                sender.send_fft(frame, get_db_floor())
