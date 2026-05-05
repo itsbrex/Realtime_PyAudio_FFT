@@ -28,10 +28,12 @@ const HANDLE_W = 8;       // edge-handle hit width in viewBox units
 // mid on outer row.
 const LABEL_Y = { low: 22, mid: 12, high: 22 };
 
+import { LMH, lmhRgba } from "./colors.js";
+
 const COLORS = {
-  low:  { fill: "rgba(230, 100, 90, 0.32)",  stroke: "#e6645a", handle: "#e6645a" },
-  mid:  { fill: "rgba( 90, 200,120, 0.32)",  stroke: "#5ac878", handle: "#5ac878" },
-  high: { fill: "rgba( 90, 150,230, 0.32)",  stroke: "#5a96e6", handle: "#5a96e6" },
+  low:  { fill: lmhRgba("low",  0.32), stroke: LMH.low.hex,  handle: LMH.low.hex  },
+  mid:  { fill: lmhRgba("mid",  0.32), stroke: LMH.mid.hex,  handle: LMH.mid.hex  },
+  high: { fill: lmhRgba("high", 0.32), stroke: LMH.high.hex, handle: LMH.high.hex },
 };
 
 const TICKS = [20, 30, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000];

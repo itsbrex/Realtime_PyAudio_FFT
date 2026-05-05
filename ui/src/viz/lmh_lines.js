@@ -1,6 +1,7 @@
 // Three rolling polylines for low/mid/high.
 
 import { store, recordVizPerf } from "../store.js";
+import { LMH } from "../colors.js";
 
 const N = 300;
 
@@ -60,9 +61,9 @@ export function makeLines(canvas) {
     }
     ctx.stroke();
 
-    drawSeries(buf.low,  "#5a8dee");
-    drawSeries(buf.mid,  "#79d17a");
-    drawSeries(buf.high, "#e8a857");
+    drawSeries(buf.low,  LMH.low.hex);
+    drawSeries(buf.mid,  LMH.mid.hex);
+    drawSeries(buf.high, LMH.high.hex);
     recordVizPerf("lines", performance.now() - t0);
   }
   return { draw };

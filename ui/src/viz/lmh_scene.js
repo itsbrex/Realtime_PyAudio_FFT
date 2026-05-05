@@ -7,6 +7,7 @@
 // than dot density alone.
 
 import { store, recordVizPerf } from "../store.js";
+import { LMH } from "../colors.js";
 
 const N_PARTICLES = 200;
 
@@ -77,9 +78,9 @@ export function makeScene(canvas) {
     const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, lowR);
     const light = 28 + 50 * lo;                // 28..78
     const alpha = 0.35 + 0.55 * lo;            // 0.35..0.90
-    grad.addColorStop(0,    `hsla(210, 85%, ${light}%, ${alpha})`);
-    grad.addColorStop(0.65, `hsla(210, 85%, ${light}%, ${alpha * 0.5})`);
-    grad.addColorStop(1,    `hsla(210, 85%, ${light}%, 0)`);
+    grad.addColorStop(0,    `hsla(${LMH.low.hue}, 80%, ${light}%, ${alpha})`);
+    grad.addColorStop(0.65, `hsla(${LMH.low.hue}, 80%, ${light}%, ${alpha * 0.5})`);
+    grad.addColorStop(1,    `hsla(${LMH.low.hue}, 80%, ${light}%, 0)`);
     ctx.fillStyle = grad;
     ctx.beginPath();
     ctx.arc(cx, cy, lowR, 0, Math.PI * 2);
@@ -89,7 +90,7 @@ export function makeScene(canvas) {
     if (md > 0.02) {
       const midR  = lowR + baseR * (0.04 + 0.18 * md);
       const ringW = Math.max(1, baseR * 0.06 * md);
-      ctx.strokeStyle = `hsla(45, 90%, 62%, ${0.3 + 0.6 * md})`;
+      ctx.strokeStyle = `hsla(${LMH.mid.hue}, 55%, 60%, ${0.3 + 0.6 * md})`;
       ctx.lineWidth = ringW;
       ctx.beginPath();
       ctx.arc(cx, cy, midR, 0, Math.PI * 2);
@@ -103,7 +104,7 @@ export function makeScene(canvas) {
     const maxR2 = (Math.hypot(w, h) * 0.5 + 8) ** 2;
     const r0    = lowR;                                  // respawn radius
     const sz    = Math.max(1, Math.round(1.5 * dpr));
-    ctx.fillStyle = `rgba(255, 255, 255, ${0.25 + 0.7 * hi})`;
+    ctx.fillStyle = `rgba(${LMH.high.rgb}, ${0.25 + 0.7 * hi})`;
     ctx.beginPath();
     for (let i = 0; i < N_PARTICLES; i++) {
       px[i] += pvx[i] * dt * speedScale;

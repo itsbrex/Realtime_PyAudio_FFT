@@ -1,6 +1,7 @@
 // FFT bars with viridis-ish LUT, optional peak hold.
 
 import { store, recordVizPerf } from "../store.js";
+import { LMH, LMH_ORDER } from "../colors.js";
 
 const LUT = (() => {
   // Cheap viridis approximation: blue -> teal -> green -> yellow.
@@ -69,11 +70,42 @@ export function makeFft(canvas) {
       const r = LUT[cidx*3], g = LUT[cidx*3+1], b = LUT[cidx*3+2];
       ctx.fillStyle = `rgb(${r},${g},${b})`;
       ctx.fillRect(i * barW, h - barH, Math.max(1, barW - 1), barH);
-      // peak tick
+      // peak tick (slow bar) — brighter and a bit thicker so it reads clearly
       const py = h - peaks[i] * h;
-      ctx.fillStyle = "rgba(255,255,255,0.35)";
-      ctx.fillRect(i * barW, py - 1, Math.max(1, barW - 1), 1);
+      ctx.fillStyle = "rgba(255,255,255,0.75)";
+      ctx.fillRect(i * barW, py - 1, Math.max(1, barW - 1), 2);
     }
+
+    // L/M/H band region overlay — match the FFT's log-frequency axis
+    const meta = store.meta || {};
+    const fMin = meta.fft?.f_min ?? 30;
+    const sr = meta.sr ?? 48000;
+    const fMax = sr / 2;
+    const bands = meta.bands;
+    if (bands && fMax > fMin) {
+      const logFmin = Math.log10(fMin);
+      const logSpan = Math.log10(fMax) - logFmin;
+      const freqToX = (f) => {
+        if (f <= fMin) return 0;
+        if (f >= fMax) return w;
+        return ((Math.log10(f) - logFmin) / logSpan) * w;
+      };
+      for (const name of LMH_ORDER) {
+        const b = bands[name];
+        if (!b) continue;
+        const x0 = freqToX(b.lo_hz);
+        const x1 = freqToX(b.hi_hz);
+        if (x1 <= x0) continue;
+        const c = LMH[name].rgb;
+        ctx.fillStyle = `rgba(${c},0.15)`;
+        ctx.fillRect(x0, 0, x1 - x0, h);
+        // edges — slightly more opaque so the boundaries pop
+        ctx.fillStyle = `rgba(${c},0.7)`;
+        ctx.fillRect(x0, 0, 1, h);
+        ctx.fillRect(x1 - 1, 0, 1, h);
+      }
+    }
+
     recordVizPerf("fft", performance.now() - t0);
   }
   return { draw };

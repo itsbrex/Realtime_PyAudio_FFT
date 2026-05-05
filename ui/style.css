@@ -185,6 +185,9 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   width: 0%;
   transition: width 60ms linear;
 }
+#raw-low  { background: #5a8dee; }
+#raw-mid  { background: #79d17a; }
+#raw-high { background: #e8a857; }
 
 .counters {
   display: flex;

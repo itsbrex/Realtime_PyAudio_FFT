@@ -1,9 +1,10 @@
 // Three vertical bars with peak-hold ticks decaying at ~1.5/sec.
 
 import { store, recordVizPerf } from "../store.js";
+import { LMH_HEX, LMH_ORDER } from "../colors.js";
 
-const COLORS = ["#5a8dee", "#79d17a", "#e8a857"];
-const LABELS = ["low", "mid", "high"];
+const COLORS = LMH_HEX;
+const LABELS = LMH_ORDER;
 
 export function makeBars(canvas) {
   const ctx = canvas.getContext("2d", { alpha: false });
