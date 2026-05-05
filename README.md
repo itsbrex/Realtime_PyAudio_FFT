@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/screenshot.webp" alt="Realtime Audio Feature Server screenshot" width="80%">
+</p>
+
 # Realtime Audio Feature Server
 
 A localhost Python server that captures live audio (mic, line-in, soundcard, loopback device, ...), computes perceptually-tuned **low / mid / high** band energies and an optional **128-bin log-spaced FFT spectrum**, and publishes them to:
