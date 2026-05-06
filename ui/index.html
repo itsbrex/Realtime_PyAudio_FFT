@@ -31,7 +31,7 @@
           <canvas id="viz-scene" width="640" height="200"></canvas>
         </div>
         <div class="viz-card">
-          <div class="viz-title">FFT (log-x, dB) <label class="inline" title="Enable / disable the FFT worker. Disabling saves CPU when you only need L/M/H."><input type="checkbox" id="fft-toggle" /> enable</label> <label class="inline" title="Apply a +4.5 dB/octave visual tilt (referenced to 1 kHz) so music with a typical pink-ish spectrum reads roughly flat. Display-only — OSC and the WS payload still carry honest dB."><input type="checkbox" id="fft-tilt" checked /> tilt</label></div>
+          <div class="viz-title">FFT (log-x, dB) <label class="inline" title="Enable / disable the FFT worker. Disabling saves CPU when you only need L/M/H."><input type="checkbox" id="fft-toggle" /> enable</label> <label class="inline" title="Bypass FFT post-processing and show the wire-format dB log spectrum (sentinels render as gaps, fixed db_floor/db_ceiling, no smoothing/equalization). Default OFF — by default the viz uses the same Smoothing tau and Auto-scaler settings as the L/M/H pipeline so what you see mirrors the OSC output."><input type="checkbox" id="fft-raw-db" /> raw dB</label></div>
           <canvas id="viz-fft" width="640" height="200"></canvas>
         </div>
       </section>
@@ -57,16 +57,16 @@
 
         <fieldset>
           <legend>Smoothing tau (ms)</legend>
-          <label title="Time constant of the LOW band's exponential smoother. Larger = lazier / smoother response, smaller = snappier / more reactive.">low <input type="range" id="tau-low"  min="5" max="2000" step="1" data-log="1" /> <span id="tau-low-val"></span></label>
-          <label title="Time constant of the MID band's exponential smoother. Larger = lazier, smaller = snappier.">mid <input type="range" id="tau-mid"  min="5" max="2000" step="1" data-log="1" /> <span id="tau-mid-val"></span></label>
-          <label title="Time constant of the HIGH band's exponential smoother. Larger = lazier, smaller = snappier.">high <input type="range" id="tau-high" min="5" max="2000" step="1" data-log="1" /> <span id="tau-high-val"></span></label>
+          <label title="Time constant of the LOW band's exponential smoother. Larger = lazier / smoother, smaller = snappier. Also drives FFT-bin smoothing for the visualizer (interpolated across the spectrum from the L/M/H band centers).">low <input type="range" id="tau-low"  min="5" max="2000" step="1" data-log="1" /> <span id="tau-low-val"></span></label>
+          <label title="Time constant of the MID band's exponential smoother. Larger = lazier, smaller = snappier. Also drives FFT-bin smoothing for the visualizer (interpolated across the spectrum from the L/M/H band centers).">mid <input type="range" id="tau-mid"  min="5" max="2000" step="1" data-log="1" /> <span id="tau-mid-val"></span></label>
+          <label title="Time constant of the HIGH band's exponential smoother. Larger = lazier, smaller = snappier. Also drives FFT-bin smoothing for the visualizer (interpolated across the spectrum from the L/M/H band centers).">high <input type="range" id="tau-high" min="5" max="2000" step="1" data-log="1" /> <span id="tau-high-val"></span></label>
         </fieldset>
 
         <fieldset>
           <legend>Auto-scaler</legend>
-          <label title="Release time of the rolling peak follower. Longer windows hold loud peaks longer, so quieter passages stay visible. Snaps to multiples of 10 s.">window (s) <input type="range" id="autoscale-tau" min="10" max="300" step="1" data-log="1" /> <span id="autoscale-tau-val"></span></label>
-          <label title="Soft noise gate: signals below this RMS are treated as silence (the auto-scaler won't try to amplify them). Shown in dBFS.">noise gate <input type="range" id="autoscale-floor" min="0" max="1000" step="1" /> <span id="autoscale-floor-val"></span></label>
-          <label title="Blend between auto-scaled (1.0) and raw (0.0) output. 100% lets the auto-scaler fully normalize per-band; 0% disables it.">strength <input type="range" id="autoscale-strength" min="0" max="100" step="1" /> <span id="autoscale-strength-val"></span></label>
+          <label title="Release time of the rolling peak follower. Longer windows hold loud peaks longer, so quieter passages stay visible. Snaps to multiples of 10 s. Drives both the L/M/H auto-scaler AND the FFT visualizer's per-bin peak follower.">window (s) <input type="range" id="autoscale-tau" min="10" max="300" step="1" data-log="1" /> <span id="autoscale-tau-val"></span></label>
+          <label title="Soft noise gate: signals below this RMS are treated as silence (the auto-scaler won't try to amplify them). Shown in dBFS. Applied to both L/M/H and FFT bins. Bins below the floor stay pinned at the chart bottom (no disappearing bars).">noise gate <input type="range" id="autoscale-floor" min="0" max="1000" step="1" /> <span id="autoscale-floor-val"></span></label>
+          <label title="Blend between auto-scaled (1.0) and raw (0.0) output. 100% = full per-bin/per-band peak normalization; 0% = honest dB readout for the FFT and raw RMS for L/M/H. Drives both the L/M/H output AND the FFT visualizer.">strength <input type="range" id="autoscale-strength" min="0" max="100" step="1" /> <span id="autoscale-strength-val"></span></label>
           <div class="raw-strip" title="Raw per-band RMS (pre auto-scaler). Useful to see how 'hot' the input is and to set the noise gate.">
             raw:
             <span class="raw-bar"><span class="raw-bar-fill" id="raw-low"></span></span>

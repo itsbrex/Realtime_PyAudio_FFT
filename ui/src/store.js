@@ -7,7 +7,7 @@ export const store = {
   fft_bins: null, // Float32Array
   fft_db_floor: -60,
   fft_db_ceiling: 0,
-  fft_tilt_enabled: true, // display-only +4.5 dB/oct tilt @ 1 kHz
+  fft_raw_db: false, // display-only: when true, bypass post-processing and show wire-format dB
 
   // Meta
   meta: {

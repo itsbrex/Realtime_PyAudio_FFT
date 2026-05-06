@@ -159,11 +159,16 @@ export function setupControls() {
     send({ type: "set_fft", enabled: fftToggle.checked });
   });
 
-  // FFT display tilt (UI-only; OSC/WS payload stays honest dB)
-  const fftTilt = document.getElementById("fft-tilt");
-  store.fft_tilt_enabled = fftTilt.checked;
-  fftTilt.addEventListener("change", () => {
-    store.fft_tilt_enabled = fftTilt.checked;
+  // FFT raw-dB display toggle (UI-only; the wire payload is always honest dB).
+  // When OFF, the viz mirrors the L/M/H pipeline: per-bin smoothing (taus
+  // interpolated from the L/M/H band centers), per-bin asymmetric peak
+  // follower with the auto-scaler's release tau, soft noise gate and tanh,
+  // strength-blended with a fixed-range dB readout. When ON, post-processing
+  // is bypassed entirely and we render the wire-format dB log spectrum.
+  const fftRawDb = document.getElementById("fft-raw-db");
+  store.fft_raw_db = fftRawDb.checked;
+  fftRawDb.addEventListener("change", () => {
+    store.fft_raw_db = fftRawDb.checked;
   });
 
   // Devices

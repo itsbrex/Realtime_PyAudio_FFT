@@ -6,13 +6,13 @@ audio:
   channels: 1
 dsp:
   low:
-    lo_hz: 104.0
+    lo_hz: 72.0
     hi_hz: 232.0
   mid:
-    lo_hz: 512.0
-    hi_hz: 2112.0
+    lo_hz: 312.0
+    hi_hz: 1920.0
   high:
-    lo_hz: 4096.0
+    lo_hz: 3264.0
     hi_hz: 13184.0
   tau:
     low: 0.04007222664388595
@@ -20,7 +20,7 @@ dsp:
     high: 0.014696380028237662
 autoscale:
   tau_release_s: 120.0
-  noise_floor: 9.702990000000002e-05
+  noise_floor: 0.0003307949
   strength: 1.0
 fft:
   enabled: true
