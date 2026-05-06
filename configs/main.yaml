@@ -6,13 +6,13 @@ audio:
   channels: 1
 dsp:
   low:
-    lo_hz: 80.0
+    lo_hz: 88.0
     hi_hz: 184.0
   mid:
     lo_hz: 296.0
     hi_hz: 1856.0
   high:
-    lo_hz: 3456.0
+    lo_hz: 2624.0
     hi_hz: 13952.0
   tau:
     low: 0.09984995066802352
@@ -24,8 +24,8 @@ dsp:
     high: 0.0031420094470879134
 autoscale:
   tau_attack_s: 0.2552096536028223
-  tau_release_s: 60.0
-  noise_floor: 1.0156638614421152e-05
+  tau_release_s: 10.0
+  noise_floor: 3.213660538640315e-05
   strength: 1.0
   master_gain: 1.0
 fft:
@@ -53,8 +53,8 @@ ws:
 ui:
   peak_decay_per_s: 0.5
   layout:
-    split_x: 0.32439231076475106
-    split_y: 0.3860607968872044
+    split_x: 0.354932218615625
+    split_y: 0.3815992907016653
     quadrants:
     - bars
     - lines
