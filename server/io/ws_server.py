@@ -52,6 +52,7 @@ class WSServer:
     def __init__(self, host: str, port: int, snapshot_hz: int,
                  features_store, fft_store, get_meta, get_devices, get_presets,
                  get_server_status, get_fft_enabled, get_fft_send_raw_db,
+                 get_master_gain,
                  dispatcher_handle,
                  perf_ring: np.ndarray | None = None):
         self.host = host
@@ -65,6 +66,7 @@ class WSServer:
         self.get_server_status = get_server_status
         self.get_fft_enabled = get_fft_enabled
         self.get_fft_send_raw_db = get_fft_send_raw_db
+        self.get_master_gain = get_master_gain
         self.dispatcher_handle = dispatcher_handle
         self.clients: set[_Client] = set()
         self._server = None
@@ -197,12 +199,13 @@ class WSServer:
             seq, raw, scaled = self.features_store.read()
             if seq != last_feat_seq:
                 last_feat_seq = seq
+                g = self.get_master_gain()
                 msg = {
                     "type": "snapshot",
                     "seq": seq,
-                    "low": scaled[0],
-                    "mid": scaled[1],
-                    "high": scaled[2],
+                    "low": scaled[0] * g,
+                    "mid": scaled[1] * g,
+                    "high": scaled[2] * g,
                     "low_raw": raw[0],
                     "mid_raw": raw[1],
                     "high_raw": raw[2],
@@ -218,7 +221,10 @@ class WSServer:
                 fseq, frame = self.fft_store.read(kind)
                 if fseq != last_fft_seq and frame is not None:
                     last_fft_seq = fseq
-                    payload = encode_fft_binary(frame)
+                    # Master gain only multiplies the processed feature
+                    # output; the raw-dB monitor stream is sent untouched.
+                    gain = 1.0 if kind == "raw_db" else self.get_master_gain()
+                    payload = encode_fft_binary(frame, gain)
                     for c in list(self.clients):
                         c.outbound.put_nowait_drop_oldest(payload)
             if self.perf_ring is not None:
@@ -255,9 +261,11 @@ class WSServer:
         return self.get_server_status()
 
 
-def encode_fft_binary(frame: np.ndarray) -> bytes:
+def encode_fft_binary(frame: np.ndarray, gain: float = 1.0) -> bytes:
     """Wire layout: [type=1:u8][reserved:u8][n_bins:u16][float32 * n_bins] LE."""
     arr = np.asarray(frame, dtype=np.float32)
+    if gain != 1.0:
+        arr = arr * np.float32(gain)
     n = int(arr.shape[0])
     header = struct.pack("<BBH", 1, 0, n)
     return header + arr.tobytes(order="C")

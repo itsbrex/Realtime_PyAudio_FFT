@@ -45,6 +45,10 @@ export const store = {
   // the FFT viz. Server-authoritative — mirrored from meta.ui_peak_decay_per_s.
   peak_decay_per_s: 0.6,
 
+  // Visual history window (seconds) for the L/M/H rolling-lines chart. UI-only
+  // — not persisted, not sent to the server. Range: 5..30s.
+  lines_history_s: 5,
+
   // Server-side snapshot rate measurement (only JSON snapshot messages are
   // counted, so the FFT enable toggle doesn't change this number).
   snapshotTimestamps: [], // last 60 perf.now() of any inbound "snapshot" msg

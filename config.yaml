@@ -6,8 +6,8 @@ audio:
   channels: 1
 dsp:
   low:
-    lo_hz: 80.0
-    hi_hz: 200.0
+    lo_hz: 88.0
+    hi_hz: 208.0
   mid:
     lo_hz: 312.0
     hi_hz: 1920.0
@@ -23,6 +23,7 @@ autoscale:
   tau_release_s: 60.0
   noise_floor: 0.0005929741
   strength: 1.0
+  master_gain: 1.0
 fft:
   enabled: true
   n_bins: 128
@@ -47,3 +48,11 @@ ws:
   http_port: 8766
 ui:
   peak_decay_per_s: 0.6
+  layout:
+    split_x: 0.3354207717121025
+    split_y: 0.47008160033053303
+    quadrants:
+    - bars
+    - lines
+    - scene
+    - fft

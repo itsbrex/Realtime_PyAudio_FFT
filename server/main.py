@@ -262,6 +262,7 @@ class App:
                 get_fft_enabled=lambda: self.fft_enabled.is_set(),
                 get_db_floor=lambda: self.cfg.fft.db_floor,
                 get_send_raw_db=lambda: self.cfg.fft.send_raw_db,
+                get_master_gain=lambda: self.cfg.autoscale.master_gain,
             ),
             name="osc-sender",
         )
@@ -285,6 +286,7 @@ class App:
                 get_server_status=self.snapshot_server_status,
                 get_fft_enabled=lambda: self.fft_enabled.is_set(),
                 get_fft_send_raw_db=lambda: self.cfg.fft.send_raw_db,
+                get_master_gain=lambda: self.cfg.autoscale.master_gain,
                 dispatcher_handle=dispatcher,
                 perf_ring=self.perf_ws,
             )
@@ -353,9 +355,11 @@ class App:
                 "tau_release_s": cfg.autoscale.tau_release_s,
                 "noise_floor": cfg.autoscale.noise_floor,
                 "strength": cfg.autoscale.strength,
+                "master_gain": cfg.autoscale.master_gain,
             },
             "ws_snapshot_hz": self.ws.snapshot_hz if self.ws else cfg.ws.snapshot_hz,
             "ui_peak_decay_per_s": cfg.ui.peak_decay_per_s,
+            "ui_layout": cfg.ui.layout,
             "device": device,
         }
 
@@ -405,6 +409,7 @@ class App:
                 "tau_release_s": cfg.autoscale.tau_release_s,
                 "noise_floor": cfg.autoscale.noise_floor,
                 "strength": cfg.autoscale.strength,
+                "master_gain": cfg.autoscale.master_gain,
             },
             "fft": {
                 "n_bins": cfg.fft.n_bins,

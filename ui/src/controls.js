@@ -153,6 +153,48 @@ export function setupControls() {
   floorEl.addEventListener("pointerup", () => { if (floorDragging) { updateFloor(true); floorDragging = false; } });
   const floorCtl = { setValue: (f) => { floorEl.value = String(floorToSlider(f)); floorLab.textContent = f <= 0 ? "off" : `${(20 * Math.log10(f)).toFixed(0)} dBFS`; } };
 
+  // Master gain — final post-processing multiplier. Slider range 50..150 →
+  // 0.5..1.5 (1.0 centered). At gain ≤ 1.0 the slider uses the default UI
+  // accent styling. Above 1.0 it switches to a tint that lerps from orange
+  // (just past 1.0) to red (at 1.5) to flag values that overflow the
+  // conventional [0,1] output range.
+  const masterEl  = document.getElementById("autoscale-master");
+  const masterLab = document.getElementById("autoscale-master-val");
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const lerpRgb = (a, b, t) => [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)];
+  const rgbStr = (c) => `rgb(${Math.round(c[0])}, ${Math.round(c[1])}, ${Math.round(c[2])})`;
+  const ORANGE = [245, 166,  35];
+  const RED    = [230,  74,  74];
+  const darken = (c) => [c[0] * 0.62, c[1] * 0.62, c[2] * 0.62];
+  const paintMaster = (gain) => {
+    if (gain <= 1.0) {
+      masterEl.classList.remove("overflow");
+      masterEl.style.removeProperty("--master-color");
+      masterEl.style.removeProperty("--master-color-dark");
+      return;
+    }
+    const t = Math.min(1, (gain - 1.0) / 0.5);
+    const c = lerpRgb(ORANGE, RED, t);
+    masterEl.classList.add("overflow");
+    masterEl.style.setProperty("--master-color", rgbStr(c));
+    masterEl.style.setProperty("--master-color-dark", rgbStr(darken(c)));
+  };
+  let masterDragging = false;
+  const updateMaster = (commit) => {
+    const v = parseFloat(masterEl.value) / 100;
+    masterLab.textContent = `${v.toFixed(2)}×`;
+    paintMaster(v);
+    send({ type: "set_autoscale", master_gain: v, commit });
+  };
+  masterEl.addEventListener("input",     () => { masterDragging = true; updateMaster(false); });
+  masterEl.addEventListener("change",    () => { updateMaster(true); masterDragging = false; });
+  masterEl.addEventListener("pointerup", () => { if (masterDragging) { updateMaster(true); masterDragging = false; } });
+  const masterCtl = { setValue: (v) => {
+    masterEl.value = String(Math.round(v * 100));
+    masterLab.textContent = `${v.toFixed(2)}×`;
+    paintMaster(v);
+  } };
+
   const strengthEl  = document.getElementById("autoscale-strength");
   const strengthLab = document.getElementById("autoscale-strength-val");
   let strDragging = false;
@@ -221,6 +263,20 @@ export function setupControls() {
     store.peak_decay_per_s = v;
   } };
 
+  // History window for the L/M/H rolling-lines chart (UI-only, not persisted).
+  // Slider is log-scale (2..30s) but snaps to integer seconds.
+  const historyEl  = document.getElementById("history-s");
+  const historyLab = document.getElementById("history-s-val");
+  const updateHistory = () => {
+    const raw = readSlider(historyEl);
+    const v = Math.max(2, Math.min(30, Math.round(raw)));
+    historyLab.textContent = `${v}s`;
+    store.lines_history_s = v;
+  };
+  historyEl.addEventListener("input", updateHistory);
+  writeSlider(historyEl, Math.max(2, Math.min(30, store.lines_history_s ?? 5)));
+  updateHistory();
+
   // FFT toggle
   const fftToggle = document.getElementById("fft-toggle");
   fftToggle.addEventListener("change", () => {
@@ -287,6 +343,7 @@ export function setupControls() {
       tiltCtl.setValue(m.fft_tilt_db_per_oct ?? 3.0);
       floorCtl.setValue(m.autoscale.noise_floor || 0);
       strengthCtl.setValue(m.autoscale.strength ?? 1.0);
+      masterCtl.setValue(m.autoscale.master_gain ?? 1.0);
       wsCtl.setValue(m.ws_snapshot_hz || 60);
       peakDecayCtl.setValue(m.ui_peak_decay_per_s ?? 0.6);
       fftToggle.checked = !!m.fft_enabled;

@@ -1,11 +1,17 @@
-"""Pure validators for control messages and persisted config values."""
+"""Pure validators for control messages and persisted config values.
+
+Philosophy: the UI is the gatekeeper for "sane" ranges (slider min/max etc.).
+This module only enforces invariants that would otherwise crash the server,
+silently corrupt state (NaN/Inf poisoning a smoother forever), or break a
+security boundary (preset names hit the filesystem). Type-correct, finite
+values outside "tasteful" ranges are passed through — let people send a
+30-second smoothing tau or a 0.5 noise floor if they want to.
+"""
 from __future__ import annotations
 
 import math
 import re
 
-MIN_HZ = 20.0
-MIN_GAP_HZ = 50.0
 BAND_NAMES = ("low", "mid", "high")
 
 
@@ -13,30 +19,36 @@ def _is_number(x):
     return isinstance(x, (int, float)) and not isinstance(x, bool)
 
 
+def _finite_float(x, name):
+    if not _is_number(x):
+        raise ValueError(f"{name} must be numeric")
+    v = float(x)
+    if not math.isfinite(v):
+        raise ValueError(f"{name} must be finite")
+    return v
+
+
 def validate_band(name, lo_hz, hi_hz, sr):
-    """Validate a single bandpass: MIN_HZ ≤ lo_hz, hi_hz > lo_hz + MIN_GAP_HZ, hi_hz ≤ 0.45·sr."""
-    if not (_is_number(lo_hz) and _is_number(hi_hz) and _is_number(sr)):
-        raise ValueError(f"{name}: cutoffs must be numeric")
-    lo_hz = float(lo_hz)
-    hi_hz = float(hi_hz)
-    sr = float(sr)
-    if not (math.isfinite(lo_hz) and math.isfinite(hi_hz)):
-        raise ValueError(f"{name}: non-finite cutoff")
-    if lo_hz < MIN_HZ:
-        raise ValueError(f"{name}: lo_hz must be >= {MIN_HZ}")
-    if hi_hz <= lo_hz + MIN_GAP_HZ:
-        raise ValueError(f"{name}: hi_hz must be > lo_hz + {MIN_GAP_HZ}")
-    if hi_hz > 0.45 * sr:
-        raise ValueError(f"{name}: hi_hz must be <= 0.45*sr ({0.45 * sr:.0f} Hz)")
+    """Validate a single bandpass.
+
+    Hard invariants only: lo > 0, hi > lo, hi < sr/2 (Nyquist). Without these,
+    `scipy.signal.iirfilter` either errors or produces an unstable filter.
+    """
+    lo_hz = _finite_float(lo_hz, f"{name}.lo_hz")
+    hi_hz = _finite_float(hi_hz, f"{name}.hi_hz")
+    sr = _finite_float(sr, "sr")
+    if lo_hz <= 0.0:
+        raise ValueError(f"{name}: lo_hz must be > 0")
+    if hi_hz <= lo_hz:
+        raise ValueError(f"{name}: hi_hz must be > lo_hz")
+    nyq = 0.5 * sr
+    if hi_hz >= nyq:
+        raise ValueError(f"{name}: hi_hz must be < sr/2 ({nyq:.0f} Hz)")
     return lo_hz, hi_hz
 
 
 def validate_bands(bands_dict, sr):
-    """Validate {low: {lo_hz, hi_hz}, mid: {...}, high: {...}}. Returns {name: (lo, hi)}.
-
-    Bands may overlap or leave gaps — that's intentional. Each band is validated
-    independently against MIN_HZ and 0.45·sr.
-    """
+    """Validate {low: {lo_hz, hi_hz}, mid: {...}, high: {...}}. Returns {name: (lo, hi)}."""
     if not isinstance(bands_dict, dict):
         raise ValueError("bands must be a dict")
     out = {}
@@ -53,100 +65,69 @@ def validate_tau(tau_dict):
         raise ValueError("tau must be a dict")
     out = {}
     for k, v in tau_dict.items():
-        if k not in ("low", "mid", "high"):
+        if k not in BAND_NAMES:
             raise ValueError(f"unknown band {k!r}")
-        if not _is_number(v):
-            raise ValueError(f"tau[{k}] must be numeric")
-        v = float(v)
-        if not (math.isfinite(v) and 0.005 <= v <= 2.0):
-            raise ValueError(f"tau[{k}] must be in [5 ms, 2 s]")
-        out[k] = v
+        f = _finite_float(v, f"tau[{k}]")
+        if f <= 0.0:
+            raise ValueError(f"tau[{k}] must be > 0")
+        out[k] = f
     return out
 
 
 def validate_n_fft_bins(n):
     if not isinstance(n, int) or isinstance(n, bool):
         raise ValueError("n_fft_bins must be an int")
-    if not (8 <= n <= 1024):
-        raise ValueError("n_fft_bins must be in [8, 1024]")
+    if n < 1:
+        raise ValueError("n_fft_bins must be >= 1")
     return n
 
 
-def validate_autoscale(tau_attack_s=None, tau_release_s=None, noise_floor=None, strength=None):
+def validate_autoscale(tau_attack_s=None, tau_release_s=None, noise_floor=None, strength=None,
+                       master_gain=None):
     out = {}
     if tau_attack_s is not None:
-        if not _is_number(tau_attack_s):
-            raise ValueError("tau_attack_s must be numeric")
-        v = float(tau_attack_s)
-        if not (math.isfinite(v) and 0.001 <= v <= 1.0):
-            raise ValueError("tau_attack_s must be in [1 ms, 1 s]")
+        v = _finite_float(tau_attack_s, "tau_attack_s")
+        if v <= 0.0:
+            raise ValueError("tau_attack_s must be > 0")
         out["tau_attack_s"] = v
     if tau_release_s is not None:
-        if not _is_number(tau_release_s):
-            raise ValueError("tau_release_s must be numeric")
-        v = float(tau_release_s)
-        if not (math.isfinite(v) and 5.0 <= v <= 300.0):
-            raise ValueError("tau_release_s must be in [5 s, 300 s]")
+        v = _finite_float(tau_release_s, "tau_release_s")
+        if v <= 0.0:
+            raise ValueError("tau_release_s must be > 0")
         out["tau_release_s"] = v
     if noise_floor is not None:
-        if not _is_number(noise_floor):
-            raise ValueError("noise_floor must be numeric")
-        v = float(noise_floor)
-        if not (math.isfinite(v) and 0.0 <= v <= 0.1):
-            raise ValueError("noise_floor must be in [0, 0.1] linear RMS")
-        out["noise_floor"] = v
+        out["noise_floor"] = _finite_float(noise_floor, "noise_floor")
     if strength is not None:
-        if not _is_number(strength):
-            raise ValueError("strength must be numeric")
-        v = float(strength)
-        if not (math.isfinite(v) and 0.0 <= v <= 1.0):
-            raise ValueError("strength must be in [0, 1]")
-        out["strength"] = v
+        out["strength"] = _finite_float(strength, "strength")
+    if master_gain is not None:
+        out["master_gain"] = _finite_float(master_gain, "master_gain")
     return out
 
 
 def validate_peak_smear_oct(v):
-    if not _is_number(v):
-        raise ValueError("peak_smear_oct must be numeric")
-    v = float(v)
-    if not (math.isfinite(v) and 0.0 <= v <= 3.0):
-        raise ValueError("peak_smear_oct must be in [0, 3] octaves")
-    return v
+    return _finite_float(v, "peak_smear_oct")
 
 
 def validate_fft_tilt_db_per_oct(v):
-    if not _is_number(v):
-        raise ValueError("tilt_db_per_oct must be numeric")
-    v = float(v)
-    if not (math.isfinite(v) and -2.5 <= v <= 5.0):
-        raise ValueError("tilt_db_per_oct must be in [-2.5, 5] dB/oct")
-    return v
+    return _finite_float(v, "tilt_db_per_oct")
 
 
 def validate_peak_decay_per_s(v):
-    if not _is_number(v):
-        raise ValueError("peak_decay_per_s must be numeric")
-    v = float(v)
-    if not (math.isfinite(v) and 0.0 <= v <= 10.0):
-        raise ValueError("peak_decay_per_s must be in [0, 10] /s")
-    return v
+    return _finite_float(v, "peak_decay_per_s")
 
 
 def validate_ws_snapshot_hz(hz):
-    if not _is_number(hz):
-        raise ValueError("hz must be numeric")
-    hz = float(hz)
-    if not math.isfinite(hz):
-        raise ValueError("hz must be finite")
-    if not (15 <= hz <= 240):
-        raise ValueError("hz must be in [15, 240]")
-    return int(round(hz))
+    v = _finite_float(hz, "hz")
+    if v <= 0.0:
+        raise ValueError("hz must be > 0")
+    return int(round(v))
 
 
 _PRESET_NAME_RE = re.compile(r"^[a-zA-Z0-9_\- ]+$")
 
 
 def validate_preset_name(name):
+    """Preset names hit the filesystem (preset-<name>.yaml) — keep strict."""
     if not isinstance(name, str):
         raise ValueError("preset name must be a string")
     n = name.strip()
@@ -157,6 +138,27 @@ def validate_preset_name(name):
             "preset name may only contain letters, digits, spaces, hyphens, underscores"
         )
     return n
+
+
+CARD_IDS = ("bars", "lines", "scene", "fft")
+
+
+def validate_ui_layout(layout):
+    """Validate a tiling 2x2 layout: {split_x, split_y, quadrants: [TL,TR,BL,BR]}.
+
+    quadrants must be a permutation of CARD_IDS — that's structural, not taste:
+    duplicate or missing IDs would break the UI's mount logic.
+    """
+    if not isinstance(layout, dict):
+        raise ValueError("layout must be a dict")
+    sx = _finite_float(layout.get("split_x"), "split_x")
+    sy = _finite_float(layout.get("split_y"), "split_y")
+    quads = layout.get("quadrants")
+    if not (isinstance(quads, list) and len(quads) == 4):
+        raise ValueError("quadrants must be a 4-item list (TL, TR, BL, BR)")
+    if sorted(quads) != sorted(CARD_IDS):
+        raise ValueError(f"quadrants must be a permutation of {list(CARD_IDS)}")
+    return {"split_x": sx, "split_y": sy, "quadrants": list(quads)}
 
 
 def validate_device_index(idx):

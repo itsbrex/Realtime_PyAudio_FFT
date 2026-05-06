@@ -50,6 +50,10 @@ class AutoscaleCfg:
     tau_release_s: float = 60.0
     noise_floor: float = 0.001
     strength: float = 1.0
+    # Final output gain applied to LMH and processed FFT after the full
+    # post-processing pipeline. Range [0.5, 1.5]; values >1 may push outputs
+    # past 1.0 (downstream consumers must accept that).
+    master_gain: float = 1.0
 
 
 @dataclass
@@ -90,11 +94,26 @@ class OscCfg:
     send_fft: bool = False
 
 
+def _default_layout() -> dict:
+    # Tiling 2x2 layout: two splits + quadrant order (TL, TR, BL, BR). Default
+    # mirrors the legacy CSS grid: narrow left column (bars + scene), wider
+    # right column (lines + fft), split horizontally 40/60.
+    return {
+        "split_x": 0.4,
+        "split_y": 0.5,
+        "quadrants": ["bars", "lines", "scene", "fft"],
+    }
+
+
 @dataclass
 class UiCfg:
     # Visual peak-hold decay rate (per second) for the L/M/H bars and FFT
     # visualizers. Pure UI-side concern — does not affect DSP or OSC payload.
     peak_decay_per_s: float = 0.6
+    # Per-card layout (x, y, w, h as fractions of the viz container) for the
+    # four viz cards. Free-floating: cards may overlap. Edited via the UI
+    # (drag edges to resize, drag title to move/swap) and persisted here.
+    layout: dict = field(default_factory=_default_layout)
 
 
 @dataclass
@@ -203,6 +222,7 @@ def load_config(path: Path | str) -> Config:
             tau_release_s=as_raw.get("tau_release_s"),
             noise_floor=as_raw.get("noise_floor"),
             strength=as_raw.get("strength"),
+            master_gain=as_raw.get("master_gain"),
         )
         for k, v in ok.items():
             setattr(cfg.autoscale, k, v)
@@ -276,6 +296,11 @@ def load_config(path: Path | str) -> Config:
             cfg.ui.peak_decay_per_s = V.validate_peak_decay_per_s(u_raw["peak_decay_per_s"])
     except Exception as e:
         log.warning("config ui.peak_decay_per_s invalid (%s); using default", e)
+    if "layout" in u_raw:
+        try:
+            cfg.ui.layout = V.validate_ui_layout(u_raw["layout"])
+        except Exception as e:
+            log.warning("config ui.layout invalid (%s); using default", e)
 
     return cfg
 

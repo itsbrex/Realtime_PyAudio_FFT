@@ -8,7 +8,11 @@ import { makeBars }  from "./viz/lmh_bars.js";
 import { makeScene } from "./viz/lmh_scene.js";
 import { makeFft }   from "./viz/fft_2d.js";
 import { setupTooltips } from "./tooltips.js";
+import { setupLayout, applyLayout } from "./layout.js";
+import { setupSidebar } from "./sidebar.js";
 
+setupSidebar();
+setupLayout();
 const controls = setupControls();
 
 const lines = makeLines(document.getElementById("viz-lines"));
@@ -27,9 +31,18 @@ onMessage("meta", (m) => {
   if (m.fft_db_floor !== undefined) store.fft_db_floor = m.fft_db_floor;
   if (m.fft_db_ceiling !== undefined) store.fft_db_ceiling = m.fft_db_ceiling;
   if (m.fft_send_raw_db !== undefined) store.fft_send_raw_db = !!m.fft_send_raw_db;
+  if (m.ui_layout) applyLayout(m.ui_layout);
   // When FFT is disabled, drop the last frame so the viz shows "FFT disabled"
   // instead of a frozen spectrum from the moment of toggle-off.
   if (m.fft_enabled === false) store.fft_bins = null;
+  // Mirror the band-edit UI into the FFT canvas when FFT is on; hide the
+  // side-panel "Bandpass edges" fieldset since the canvas overlay replaces it.
+  if (m.bands) fft.syncBands(m.bands);
+  if (m.fft_enabled !== undefined) {
+    fft.setInteractive(!!m.fft_enabled);
+    const fs = document.getElementById("fieldset-bandpass");
+    if (fs) fs.style.display = m.fft_enabled ? "none" : "";
+  }
   controls.syncMeta();
 });
 

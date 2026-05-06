@@ -17,25 +17,27 @@
       </div>
     </header>
 
-    <main class="grid">
+    <main class="grid" id="main-grid">
       <section class="viz-grid">
-        <div class="viz-card">
-          <div class="viz-title">L/M/H rolling lines</div>
-          <canvas id="viz-lines" width="640" height="200"></canvas>
-        </div>
-        <div class="viz-card">
+        <div class="viz-card" data-card="bars">
           <div class="viz-title">L/M/H bars + peak hold <label class="inline" title="Visual-only peak-hold decay rate (units per second). Affects the white peak ticks on this graph AND on the FFT graph. Smaller = peaks linger longer; larger = they fall faster. Does not affect DSP or OSC payload."><input type="range" id="peak-decay" min="10" max="100" step="1" style="width:80px;vertical-align:middle" /> <span id="peak-decay-val" style="font-size:11px"></span></label></div>
           <canvas id="viz-bars" width="320" height="200"></canvas>
         </div>
-        <div class="viz-card">
+        <div class="viz-card" data-card="lines">
+          <div class="viz-title">L/M/H rolling lines <label class="inline" title="Visual-only history window (seconds). Controls how far back the rolling chart extends. Larger values pack more time into the same canvas width."><input type="range" id="history-s" min="2" max="30" step="0.001" data-log="1" style="width:80px;vertical-align:middle" /> <span id="history-s-val" style="font-size:11px"></span></label></div>
+          <canvas id="viz-lines" width="640" height="200"></canvas>
+        </div>
+        <div class="viz-card" data-card="scene">
           <div class="viz-title">L/M/H scene</div>
           <canvas id="viz-scene" width="640" height="200"></canvas>
         </div>
-        <div class="viz-card">
+        <div class="viz-card" data-card="fft">
           <div class="viz-title">FFT (log-x, dB) <label class="inline" title="Enable / disable the FFT worker. Disabling saves CPU when you only need L/M/H."><input type="checkbox" id="fft-toggle" /> enable</label> <label class="inline" title="What you see in this graph IS what's sent over OSC on /audio/fft. OFF (default): server runs the same per-bin pipeline as L/M/H (smoother → asymmetric peak follower → soft gate → tanh → strength blend) and sends [0..1] post-processed values. ON: server sends the raw wire dB log spectrum (sentinels rendered as gaps). The server is authoritative — toggling sends set_fft_send_raw_db; the OSC payload switches in lockstep with the visualization."><input type="checkbox" id="fft-raw-db" /> raw dB</label></div>
           <canvas id="viz-fft" width="640" height="200"></canvas>
         </div>
       </section>
+
+      <div class="grid-resizer" id="grid-resizer" title="Drag to resize the side panel"></div>
 
       <aside class="controls">
         <fieldset>
@@ -45,7 +47,7 @@
           <button id="device-probe" title="Re-enumerate AND briefly open every input (~200 ms each) to detect which ones are currently producing signal. Devices that saw audio during the probe get a ★. Slower and momentarily grabs each device — use sparingly.">probe</button>
         </fieldset>
 
-        <fieldset>
+        <fieldset id="fieldset-bandpass">
           <legend>Bandpass edges</legend>
           <div id="freq-axis" title="Click a colored band to select it. Once selected, drag its body to shift the whole band, or drag its left/right handle to move just that edge. Click outside any band to deselect. Bands may overlap."></div>
         </fieldset>
@@ -69,6 +71,7 @@
           <label title="Blend between auto-scaled (1.0) and raw (0.0) output. 100% = full per-bin/per-band peak normalization; 0% = honest dB readout for the FFT and raw RMS for L/M/H. Drives both the L/M/H output AND the FFT visualizer.">strength <input type="range" id="autoscale-strength" min="0" max="100" step="1" /> <span id="autoscale-strength-val"></span></label>
           <label title="Soft noise gate: signals below this RMS are treated as silence (the auto-scaler won't try to amplify them). Shown in dBFS. Applied to both L/M/H and FFT bins. Bins below the floor stay pinned at the chart bottom (no disappearing bars).">noise gate <input type="range" id="autoscale-floor" min="0" max="1000" step="1" /> <span id="autoscale-floor-val"></span></label>
           <label title="Spectral tilt that rebalances the noise gate across frequency: +N dB per octave above 1 kHz, -N dB per octave below. On the FFT side it shifts the wire dB before the gate / peak follower; on L/M/H it derives a per-band noise floor from each band's geometric center, so the same global gate fires uniformly across frequency on both pipelines. 0 = flat (honest dB / single global gate); ~3 ≈ pink-noise compensation (typical music feels balanced); higher = more high-end through the gate.">tilt (dB/oct) <input type="range" id="fft-tilt" min="-25" max="50" step="1" /> <span id="fft-tilt-val"></span></label>
+          <label title="Final output gain applied to L/M/H and processed FFT after the full post-processing pipeline. Multiplies whatever is sent over OSC and WebSocket. Range 0.5–1.5 (1.0 centered); values >1.0 push outputs above 1.0 (downstream consumers must accept this). The UI visualizers cosmetically clamp at 1.0 for rendering, but the OSC / WS payload is unclamped. Track and dot tint orange/red as the gain rises past 1.0 to flag the overflow visually.">master gain <input type="range" id="autoscale-master" min="50" max="150" step="1" /> <span id="autoscale-master-val"></span></label>
         </fieldset>
 
         <fieldset>
@@ -103,6 +106,9 @@
           <div id="err-log" class="err-log"></div>
         </fieldset>
       </aside>
+
+      <button class="controls-collapse-btn" id="controls-collapse" type="button" title="Collapse side panel" aria-label="Collapse side panel">›</button>
+      <button class="controls-expand-btn" id="controls-expand" type="button" title="Expand side panel" aria-label="Expand side panel">‹</button>
     </main>
 
     <script type="module" src="src/main.js"></script>

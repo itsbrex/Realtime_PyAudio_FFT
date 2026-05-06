@@ -89,6 +89,7 @@ class Dispatcher:
             tau_release_s=msg.get("tau_release_s"),
             noise_floor=msg.get("noise_floor"),
             strength=msg.get("strength"),
+            master_gain=msg.get("master_gain"),
         )
         if "tau_attack_s" in ok or "tau_release_s" in ok:
             atk = ok.get("tau_attack_s", self.app.cfg.autoscale.tau_attack_s)
@@ -104,6 +105,8 @@ class Dispatcher:
         if "strength" in ok:
             self.app.auto_scaler.set_strength(ok["strength"])
             self.app.cfg.autoscale.strength = ok["strength"]
+        if "master_gain" in ok:
+            self.app.cfg.autoscale.master_gain = ok["master_gain"]
         if self.app.fft_postprocessor is not None:
             self.app.fft_postprocessor.update_autoscale(
                 tau_attack_s=ok.get("tau_attack_s"),
@@ -202,6 +205,7 @@ class Dispatcher:
                 tau_release_s=a.get("tau_release_s"),
                 noise_floor=a.get("noise_floor"),
                 strength=a.get("strength"),
+                master_gain=a.get("master_gain"),
             )
             if "tau_attack_s" in ok or "tau_release_s" in ok:
                 atk = ok.get("tau_attack_s", self.app.cfg.autoscale.tau_attack_s)
@@ -217,6 +221,8 @@ class Dispatcher:
             if "strength" in ok:
                 self.app.auto_scaler.set_strength(ok["strength"])
                 self.app.cfg.autoscale.strength = ok["strength"]
+            if "master_gain" in ok:
+                self.app.cfg.autoscale.master_gain = ok["master_gain"]
             if ok and self.app.fft_postprocessor is not None:
                 self.app.fft_postprocessor.update_autoscale(
                     tau_attack_s=ok.get("tau_attack_s"),
@@ -291,6 +297,13 @@ class Dispatcher:
         self.app.persister.request(commit=commit)
         return [], [{"type": "meta", **self.app.snapshot_meta()}]
 
+    async def _set_ui_layout(self, msg):
+        commit = bool(msg.get("commit", True))
+        layout = V.validate_ui_layout(msg.get("layout") or {})
+        self.app.cfg.ui.layout = layout
+        self.app.persister.request(commit=commit)
+        return [], [{"type": "meta", **self.app.snapshot_meta()}]
+
     async def _set_peak_decay(self, msg):
         commit = bool(msg.get("commit", True))
         v = V.validate_peak_decay_per_s(msg.get("peak_decay_per_s"))
@@ -322,6 +335,7 @@ class Dispatcher:
         "set_fft_peak_smear": _set_fft_peak_smear,
         "set_fft_tilt": _set_fft_tilt,
         "set_peak_decay": _set_peak_decay,
+        "set_ui_layout": _set_ui_layout,
         "list_presets": _list_presets,
         "save_preset": _save_preset,
         "load_preset": _load_preset,

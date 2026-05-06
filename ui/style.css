@@ -112,18 +112,179 @@ html, body {
 
 .grid {
   display: grid;
-  grid-template-columns: 1fr 380px;
-  gap: 12px;
-  padding: 12px;
+  grid-template-columns: 1fr 12px var(--controls-w, 304px);
+  gap: 0;
+  padding: 6px 12px;
   height: calc(100vh - 40px);
+  position: relative;
+}
+.grid.controls-collapsed {
+  grid-template-columns: 1fr 0 0;
+}
+.grid.controls-collapsed .grid-resizer,
+.grid.controls-collapsed .controls,
+.grid.controls-collapsed .controls-collapse-btn {
+  display: none;
+}
+.grid:not(.controls-collapsed) .controls-expand-btn {
+  display: none;
+}
+
+.grid-resizer {
+  position: relative;
+  cursor: ew-resize;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.grid-resizer::before {
+  content: "";
+  position: absolute;
+  top: 0; bottom: 0;
+  left: 50%;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--border-2);
+  border-radius: 999px;
+  opacity: 0;
+  transition: opacity 140ms ease, background 140ms ease;
+}
+.grid-resizer:hover::before,
+.grid-resizer.dragging::before {
+  opacity: 1;
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent-glow);
+}
+
+.controls-collapse-btn {
+  position: absolute;
+  top: 13px;
+  right: 16px;
+  width: 23px;
+  height: 23px;
+  padding: 0;
+  font-size: 16px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(125, 166, 255, 0.08);
+  border: 1px solid rgba(125, 166, 255, 0.28);
+  border-radius: 4px;
+  color: var(--accent-hi);
+  cursor: pointer;
+  z-index: 6;
+  transition: color 140ms ease, border-color 140ms ease, background 140ms ease;
+}
+.controls-collapse-btn:hover {
+  color: var(--text-1);
+  border-color: var(--accent);
+  background: rgba(125, 166, 255, 0.18);
+}
+
+.controls-expand-btn {
+  position: absolute;
+  top: 13px;
+  right: 16px;
+  width: 23px;
+  height: 23px;
+  padding: 0;
+  font-size: 16px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(125, 166, 255, 0.08);
+  border: 1px solid rgba(125, 166, 255, 0.28);
+  border-radius: 4px;
+  color: var(--accent-hi);
+  cursor: pointer;
+  z-index: 6;
+  transition: color 140ms ease, border-color 140ms ease, background 140ms ease;
+}
+.controls-expand-btn:hover {
+  color: var(--text-1);
+  border-color: var(--accent);
+  background: rgba(125, 166, 255, 0.18);
 }
 
 .viz-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: calc(50vh - 35px) 1fr;
   grid-template-rows: 1fr 1fr;
-  gap: 12px;
+  gap: 6px;
   min-height: 0;
+}
+
+/* Tiling layout mode: 2x2 quadrants always fill the container. Activated by
+   JS once the server's saved layout arrives, so the legacy CSS grid still
+   renders if the browser opens before the first meta payload. */
+.viz-grid.free-layout {
+  display: block;
+  position: relative;
+  gap: 0;
+}
+.viz-grid.free-layout .viz-card {
+  position: absolute;
+  /* Gutter is applied by the JS painter via calc() on left/top/width/height
+     (margin doesn't shrink absolutely-positioned elements with explicit
+     width/height). */
+  margin: 0;
+  width: auto;
+  height: auto;
+  /* fallback in case JS hasn't applied a position yet */
+  left: 0; top: 0;
+}
+
+.viz-resize {
+  position: absolute;
+  z-index: 5;
+  background: transparent;
+  user-select: none;
+}
+/* Internal-edge handles only. The JS hides any handle that faces the
+   container boundary (those edges are pinned). The 8px-thick handle straddles
+   the shared edge — adjacent cards each contribute one half. */
+.viz-resize-n { left: 0; right: 0; top: -7px;    height: 10px; cursor: ns-resize; }
+.viz-resize-s { left: 0; right: 0; bottom: -7px; height: 10px; cursor: ns-resize; }
+.viz-resize-e { top: 0; bottom: 0; right: -7px;  width: 10px;  cursor: ew-resize; }
+.viz-resize-w { top: 0; bottom: 0; left: -7px;   width: 10px;  cursor: ew-resize; }
+
+.viz-resize-center {
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  margin-left: -9px;
+  margin-top: -9px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  cursor: move;
+  z-index: 6;
+  user-select: none;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.viz-resize-center:hover,
+.viz-resize-center.dragging {
+  opacity: 1;
+}
+
+.viz-grid.free-layout .viz-card .viz-title {
+  cursor: grab;
+}
+.viz-grid.free-layout .viz-card .viz-title label,
+.viz-grid.free-layout .viz-card .viz-title input {
+  cursor: auto;
+}
+.viz-grid.free-layout .viz-card.dragging {
+  opacity: 0.85;
+  z-index: 10;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55);
+  pointer-events: none;
+}
+.viz-grid.free-layout .viz-card.drop-target {
+  outline: 2px dashed var(--accent);
+  outline-offset: -2px;
 }
 
 .viz-card {
@@ -143,9 +304,9 @@ html, body {
 .viz-card:hover { border-color: var(--border-2); }
 
 .viz-title {
-  font-size: 10.5px;
+  font-size: 9px;
   color: var(--text-4);
-  margin-bottom: 6px;
+  margin-bottom: 4px;
   text-transform: uppercase;
   letter-spacing: 0.8px;
   font-weight: 500;
@@ -153,6 +314,8 @@ html, body {
   justify-content: space-between;
   align-items: center;
 }
+
+.viz-card[data-card="lines"] .viz-title { padding-right: 26px; }
 
 .viz-card canvas {
   width: 100%;
@@ -171,6 +334,11 @@ html, body {
   border-radius: 8px;
   padding: 12px;
   overflow-y: auto;
+  /* Clip any residual horizontal overflow from selects/inputs that resist
+     shrinking (some browsers enforce intrinsic min-content on <select> based
+     on the longest option even with min-width: 0). */
+  overflow-x: hidden;
+  min-width: 0;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.035),
     0 4px 14px rgba(0, 0, 0, 0.28);
@@ -194,16 +362,18 @@ fieldset legend {
 }
 
 label {
-  display: flex;
+  display: grid;
+  grid-template-columns: 78px 1fr auto;
+  column-gap: 3px;
   align-items: center;
-  gap: 6px;
   padding: 4px 0;
   font-size: 12px;
   color: var(--text-2);
 }
-label.inline { display: inline-flex; padding: 0; gap: 4px; }
-label > input[type="range"] { flex: 1 1 auto; }
-label > span { font-variant-numeric: tabular-nums; min-width: 64px; text-align: right; color: var(--text-2); }
+label.inline { display: inline-flex; padding: 0; gap: 4px; grid-template-columns: none; column-gap: 0; }
+label > input[type="range"] { width: 100%; }
+label > span { font-variant-numeric: tabular-nums; min-width: 48px; text-align: right; color: var(--text-2); font-size: 9.6px; }
+label.inline > span { font-size: 11px; min-width: 0; }
 
 input[type="range"] {
   -webkit-appearance: none;
@@ -255,6 +425,27 @@ input[type="range"]:disabled::-webkit-slider-thumb {
 input[type="range"]#peak-decay::-webkit-slider-thumb {
   background: linear-gradient(180deg, rgba(80, 130, 240, 0.7) 0%, rgba(40, 90, 200, 0.55) 100%);
 }
+input[type="range"]#history-s::-webkit-slider-thumb {
+  background: linear-gradient(180deg, rgba(232, 168, 87, 0.7) 0%, rgba(180, 120, 50, 0.55) 100%);
+}
+
+/* Master-gain slider: at gain ≤ 1.0 the slider keeps the default UI accent
+   styling. As gain rises above 1.0 the .overflow class kicks in and the
+   track + thumb tint from orange (just above 1.0) to red (at 1.5). The
+   color comes from --master-color, written by controls.js. */
+input[type="range"]#autoscale-master.overflow::-webkit-slider-runnable-track {
+  background: var(--master-color);
+  box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.35);
+}
+input[type="range"]#autoscale-master.overflow::-webkit-slider-thumb {
+  background: linear-gradient(180deg, var(--master-color) 0%, var(--master-color-dark) 100%);
+}
+input[type="range"]#autoscale-master.overflow::-moz-range-track {
+  background: var(--master-color);
+}
+input[type="range"]#autoscale-master.overflow::-moz-range-thumb {
+  background: linear-gradient(180deg, var(--master-color) 0%, var(--master-color-dark) 100%);
+}
 
 /* Firefox */
 input[type="range"]::-moz-range-track {
@@ -281,7 +472,19 @@ input[type="text"], select {
   font-size: 12px;
   font-family: inherit;
   transition: border-color 120ms ease, box-shadow 120ms ease;
+  max-width: 100%;
+  text-overflow: ellipsis;
+  overflow: hidden;
+  white-space: nowrap;
 }
+
+/* width: 0 paired with flex-grow lets the select shrink past its intrinsic
+   "longest selected option" width — some browsers ignore min-width: 0 alone
+   on <select>. text-overflow: ellipsis on the base select rule cuts the
+   visible label cleanly when narrow. */
+#device-select { flex: 1 1 0; min-width: 0; width: 0; }
+fieldset:has(> #device-select) { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-width: 0; }
+fieldset:has(> #device-select) > legend { flex-basis: 100%; }
 input[type="text"]:hover, select:hover { border-color: var(--border-3); }
 input[type="text"]:focus, select:focus {
   outline: none;
@@ -323,8 +526,11 @@ button:focus-visible {
 }
 button:disabled { opacity: 0.5; cursor: not-allowed; }
 
-.row { display: flex; gap: 6px; align-items: center; }
-.row > * { flex: 1 1 auto; }
+.row { display: flex; gap: 6px; align-items: center; min-width: 0; }
+/* min-width: 0 lets text inputs / selects shrink below their intrinsic size
+   when the side panel is dragged narrow — without it the longest option text
+   keeps the element wide and forces a horizontal scrollbar. */
+.row > * { flex: 1 1 auto; min-width: 0; }
 .row > button { flex: 0 0 auto; }
 
 .counters {
