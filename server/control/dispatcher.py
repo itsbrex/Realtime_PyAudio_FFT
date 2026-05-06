@@ -17,6 +17,17 @@ from ..config import write_yaml_atomic
 log = logging.getLogger(__name__)
 
 
+def _deep_merge(base: dict, overlay: dict) -> dict:
+    """Recursive dict merge: overlay wins; nested dicts merge key-by-key."""
+    out = dict(base)
+    for k, v in overlay.items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = _deep_merge(out[k], v)
+        else:
+            out[k] = v
+    return out
+
+
 class Dispatcher:
     def __init__(self, app):
         # `app` is the orchestrator (server.main.App); we touch its attributes directly.
@@ -167,6 +178,13 @@ class Dispatcher:
             data = yaml.safe_load(path.read_text()) or {}
         except Exception as e:
             raise ValueError(f"preset {name!r} parse failed: {e}")
+        # Deep-merge over main.yaml so any missing keys fall back to the active config.
+        try:
+            main_data = yaml.safe_load(self.app.config_path.read_text()) or {}
+            if isinstance(main_data, dict) and isinstance(data, dict):
+                data = _deep_merge(main_data, data)
+        except Exception as e:
+            log.warning("preset %r: main.yaml fallback unavailable (%s)", name, e)
 
         sr = self.app.current_sr()
         applied: list[str] = []

@@ -133,6 +133,8 @@ def validate_preset_name(name):
     n = name.strip()
     if not (1 <= len(n) <= 64):
         raise ValueError("preset name must be 1-64 characters")
+    if n.lower() == "main":
+        raise ValueError("'main' is reserved for the active config file")
     if not _PRESET_NAME_RE.match(n):
         raise ValueError(
             "preset name may only contain letters, digits, spaces, hyphens, underscores"

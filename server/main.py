@@ -41,7 +41,7 @@ log = logging.getLogger(__name__)
 
 def _parse_args(argv):
     p = argparse.ArgumentParser(prog="audio-server", description="Realtime audio feature server")
-    p.add_argument("--config", default="config.yaml", help="path to config.yaml")
+    p.add_argument("--config", default="configs/main.yaml", help="path to main config file")
     p.add_argument("--no-ws", action="store_true", help="disable the WebSocket server (headless OSC)")
     p.add_argument("--open", action="store_true", help="open the bundled UI in the default browser")
     p.add_argument("--device", type=int, default=None, help="override input device index")
@@ -375,14 +375,16 @@ class App:
     def list_presets(self) -> list[dict]:
         items = []
         try:
-            for p in sorted(self.config_dir.glob("preset-*.yaml")):
-                name = p.stem[len("preset-"):]
+            self.config_dir.mkdir(exist_ok=True)
+            for p in sorted(self.config_dir.glob("*.yaml")):
+                if p.stem.lower() == "main":
+                    continue
                 try:
                     mtime = p.stat().st_mtime
                 except OSError:
                     continue
-                saved_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(mtime))
-                items.append({"name": name, "saved_at": saved_at})
+                saved_at = time.strftime("%Y-%m-%d %H:%M", time.localtime(mtime))
+                items.append({"name": p.stem, "saved_at": saved_at})
         except Exception:
             pass
         items.sort(key=lambda x: x["saved_at"], reverse=True)
@@ -391,35 +393,13 @@ class App:
     def preset_path(self, name: str) -> Path:
         # Caller has already passed `name` through validate_preset_name, so it's
         # a stripped, anchored, character-class-restricted string.
-        return self.config_dir / f"preset-{name}.yaml"
+        self.config_dir.mkdir(exist_ok=True)
+        return self.config_dir / f"{name}.yaml"
 
     def preset_body(self, name: str) -> dict:
-        cfg = self.cfg
-        return {
-            "name": name,
-            "saved_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "dsp": {
-                "low":  {"lo_hz": cfg.dsp.low.lo_hz,  "hi_hz": cfg.dsp.low.hi_hz},
-                "mid":  {"lo_hz": cfg.dsp.mid.lo_hz,  "hi_hz": cfg.dsp.mid.hi_hz},
-                "high": {"lo_hz": cfg.dsp.high.lo_hz, "hi_hz": cfg.dsp.high.hi_hz},
-                "tau":  dict(cfg.dsp.tau),
-            },
-            "autoscale": {
-                "tau_attack_s": cfg.autoscale.tau_attack_s,
-                "tau_release_s": cfg.autoscale.tau_release_s,
-                "noise_floor": cfg.autoscale.noise_floor,
-                "strength": cfg.autoscale.strength,
-                "master_gain": cfg.autoscale.master_gain,
-            },
-            "fft": {
-                "n_bins": cfg.fft.n_bins,
-                "window_size": cfg.fft.window_size,
-                "hop": cfg.fft.hop,
-                "f_min": cfg.fft.f_min,
-                "peak_smear_oct": cfg.fft.peak_smear_oct,
-                "tilt_db_per_oct": cfg.fft.tilt_db_per_oct,
-            },
-        }
+        # Presets are full snapshots — same shape as main.yaml — so loading is
+        # a deep-merge over main as fallback for any missing keys.
+        return config_to_dict(self.cfg)
 
     # ----------------- perf summary -----------------
     @staticmethod
@@ -621,6 +601,56 @@ async def _run(args, cfg, config_path):
         await app.shutdown()
 
 
+def _migrate_legacy_config_layout(config_path: Path) -> None:
+    """One-shot migration: fold legacy `config.yaml` + `presets/*.yaml` into `configs/`."""
+    configs_dir = config_path.parent
+    try:
+        configs_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return
+    cwd = Path.cwd().resolve()
+    # Legacy main config at cwd/config.yaml -> configs/main.yaml
+    legacy_main = cwd / "config.yaml"
+    if legacy_main.exists() and not config_path.exists() and legacy_main.resolve() != config_path:
+        try:
+            legacy_main.rename(config_path)
+            log.info("migrated %s -> %s", legacy_main, config_path)
+        except OSError as e:
+            log.warning("could not migrate legacy config.yaml: %s", e)
+    # Legacy presets/*.yaml or presets/preset-*.yaml -> configs/<name>.yaml
+    legacy_presets = cwd / "presets"
+    if legacy_presets.is_dir():
+        for p in legacy_presets.glob("*.yaml"):
+            stem = p.stem
+            if stem.startswith("preset-"):
+                stem = stem[len("preset-"):]
+            if stem.lower() == "main":
+                continue
+            target = configs_dir / f"{stem}.yaml"
+            if target.exists():
+                continue
+            try:
+                p.rename(target)
+            except OSError:
+                pass
+        try:
+            legacy_presets.rmdir()
+        except OSError:
+            pass
+    # Legacy preset-*.yaml at cwd
+    for p in cwd.glob("preset-*.yaml"):
+        stem = p.stem[len("preset-"):]
+        if not stem or stem.lower() == "main":
+            continue
+        target = configs_dir / f"{stem}.yaml"
+        if target.exists():
+            continue
+        try:
+            p.rename(target)
+        except OSError:
+            pass
+
+
 def main(argv=None):
     args = _parse_args(argv if argv is not None else sys.argv[1:])
     logging.basicConfig(
@@ -628,6 +658,7 @@ def main(argv=None):
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
     )
     config_path = Path(args.config).resolve()
+    _migrate_legacy_config_layout(config_path)
     cfg = load_config(config_path)
     if args.no_ws:
         cfg.ws.enabled = False

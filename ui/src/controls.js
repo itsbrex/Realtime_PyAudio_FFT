@@ -365,11 +365,13 @@ export function setupControls() {
     syncPresets() {
       const cur = presetList.value;
       presetList.innerHTML = "";
+      const counts = {};
+      for (const p of store.presets) counts[p.name] = (counts[p.name] || 0) + 1;
       // Already sorted by saved_at desc on the server.
       for (const p of store.presets) {
         const opt = document.createElement("option");
         opt.value = p.name;
-        opt.textContent = `${p.name}  (${p.saved_at.replace("T", " ").replace("Z", "")})`;
+        opt.textContent = counts[p.name] > 1 ? `${p.name}  (${p.saved_at})` : p.name;
         presetList.appendChild(opt);
       }
       if (cur) presetList.value = cur;
