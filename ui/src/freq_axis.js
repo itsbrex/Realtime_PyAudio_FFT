@@ -164,6 +164,15 @@ export function makeFreqAxis(container, getSr) {
       b.labLo.style.display = isSel ? "" : "none";
       b.labHi.style.display = isSel ? "" : "none";
     }
+    // Raise the selected band's edge handles to the top of the SVG so they
+    // win hit-testing against any overlapping band body underneath.
+    if (selected) {
+      const b = bands[selected];
+      svg.appendChild(b.handleLo);
+      svg.appendChild(b.handleHi);
+      svg.appendChild(b.labLo);
+      svg.appendChild(b.labHi);
+    }
   }
 
   function setSelected(name) {
