@@ -13,6 +13,8 @@ The server publishes these features to:
 - **External apps over OSC/UDP** (TouchDesigner, Max/MSP, Unity, custom scripts) — every audio block (~187 Hz at 48 kHz / 256 samples).
 - **A browser visualizer over WebSocket** — coalesced to ~60 Hz, plus a binary FFT frame.
 
+---
+
 **The browser is a thin renderer.** All signal post-processing (smoothing, peak normalization, gating, tanh compression, strength blending, spatial peak smearing) runs server-side, in the same code path that feeds OSC. So **what you see in the FFT graph is byte-identical to the `/audio/fft` OSC payload** — you can tune every knob from the UI and trust the picture matches what downstream apps receive.
 
 The browser UI also sends control messages back (toggle FFT, change band crossovers, switch input device, change smoothing, save/load presets). All settings persist to `configs/main.yaml`, so the server boots back into the last-used state.
