@@ -4,7 +4,11 @@
 
 # Realtime Audio Feature Server
 
-A highly optimized, minimal latency, localhost Python server that captures live audio (mic, line-in, soundcard, loopback device, ...), computes perceptually-tuned **low / mid / high** band energies and an optional **128-bin log-spaced FFT spectrum**, and publishes them to:
+A highly optimized, minimal latency, localhost Python server that captures live audio (mic, line-in, soundcard, loopback device, ...), and computes:
+- perceptually-tuned **low / mid / high** band energies and 
+- an optional **128-bin log-spaced FFT spectrum**
+
+The server publishes these features to:
 
 - **External apps over OSC/UDP** (TouchDesigner, Max/MSP, Unity, custom scripts) — every audio block (~187 Hz at 48 kHz / 256 samples).
 - **A browser visualizer over WebSocket** — coalesced to ~60 Hz, plus a binary FFT frame.
