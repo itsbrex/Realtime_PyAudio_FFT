@@ -114,6 +114,24 @@ def validate_peak_smear_oct(v):
     return v
 
 
+def validate_fft_tilt_db_per_oct(v):
+    if not _is_number(v):
+        raise ValueError("tilt_db_per_oct must be numeric")
+    v = float(v)
+    if not (math.isfinite(v) and -2.5 <= v <= 5.0):
+        raise ValueError("tilt_db_per_oct must be in [-2.5, 5] dB/oct")
+    return v
+
+
+def validate_peak_decay_per_s(v):
+    if not _is_number(v):
+        raise ValueError("peak_decay_per_s must be numeric")
+    v = float(v)
+    if not (math.isfinite(v) and 0.0 <= v <= 10.0):
+        raise ValueError("peak_decay_per_s must be in [0, 10] /s")
+    return v
+
+
 def validate_ws_snapshot_hz(hz):
     if not _is_number(hz):
         raise ValueError("hz must be numeric")

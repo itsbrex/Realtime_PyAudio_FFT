@@ -6,22 +6,22 @@ audio:
   channels: 1
 dsp:
   low:
-    lo_hz: 96.0
-    hi_hz: 248.0
+    lo_hz: 80.0
+    hi_hz: 200.0
   mid:
     lo_hz: 312.0
     hi_hz: 1920.0
   high:
-    lo_hz: 3136.0
+    lo_hz: 2880.0
     hi_hz: 12800.0
   tau:
-    low: 0.04007222664388595
-    mid: 0.025309699827756167
+    low: 0.04478187070751341
+    mid: 0.025385825194314888
     high: 0.014696380028237662
 autoscale:
-  tau_attack_s: 0.24893134348310877
+  tau_attack_s: 0.23980228135543274
   tau_release_s: 120.0
-  noise_floor: 0.0
+  noise_floor: 0.0005639751999999999
   strength: 1.0
 fft:
   enabled: true
@@ -31,7 +31,8 @@ fft:
   f_min: 30.0
   db_floor: -60.0
   db_ceiling: 0.0
-  peak_smear_oct: 0.3
+  peak_smear_oct: 0.1
+  tilt_db_per_oct: 2.0
   send_raw_db: false
 osc:
   destinations:
@@ -44,3 +45,5 @@ ws:
   port: 8765
   snapshot_hz: 60
   http_port: 8766
+ui:
+  peak_decay_per_s: 0.5

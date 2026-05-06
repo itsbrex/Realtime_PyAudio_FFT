@@ -33,6 +33,14 @@ EPS = 1e-12
 # dependent) but a fixed offset lands the two pipelines in the same ballpark.
 FFT_TO_RMS_CALIBRATION_DB = 40.0
 
+# Reference frequency for the spectral tilt: the per-bin offset is zero AT this
+# bin and grows ±tilt_db_per_oct dB per octave away. Picked at 1 kHz so the
+# default tilt is roughly a "pink-noise compensator" centered in the musical
+# range — bins below 1 kHz are pulled down, bins above are pushed up, so the
+# average music spectrum lands closer to flat and the global noise gate fires
+# uniformly across frequency.
+TILT_REF_HZ = 1000.0
+
 
 class FFTPostProcessor:
     def __init__(self, n_bins: int, f_min: float, sr: float,
@@ -41,7 +49,8 @@ class FFTPostProcessor:
                  db_floor: float = -60.0, db_ceiling: float = 0.0,
                  hop_period_s: float = 512 / 48000.0,
                  tau_attack_s: float = 0.05,
-                 peak_smear_oct: float = 0.3):
+                 peak_smear_oct: float = 0.3,
+                 tilt_db_per_oct: float = 3.0):
         self._lock = threading.Lock()
         self.n_bins = int(n_bins)
         self.f_min = float(f_min)
@@ -56,6 +65,7 @@ class FFTPostProcessor:
         self.hop_period_s = float(hop_period_s)
         self.tau_attack_s = float(tau_attack_s)
         self.peak_smear_oct = max(0.0, float(peak_smear_oct))
+        self.tilt_db_per_oct = float(tilt_db_per_oct)
         self._allocate()
 
     # ----------------- allocation -----------------
@@ -71,9 +81,26 @@ class FFTPostProcessor:
         self._diff = np.zeros(n, dtype=np.float64)
         self._alpha = np.zeros(n, dtype=np.float64)
         self.tau_per_bin = self._build_per_bin_tau()
+        self.tilt_db = self._build_tilt_db()
         self._recompute_alphas()
         self._recompute_smear()
         self._warmed = False
+
+    def _build_tilt_db(self) -> np.ndarray:
+        """Per-bin dB offset: tilt_db_per_oct × log2(f_center / TILT_REF_HZ).
+
+        Adding this to the wire dB before the noise gate compensates for the
+        natural downward slope of music/voice spectra so a single global
+        `noise_floor` gates similarly across all bins.
+        """
+        n = self.n_bins
+        log_fmin = math.log10(max(self.f_min, 1e-3))
+        f_max = self.sr / 2.0
+        log_span = max(1e-6, math.log10(f_max) - log_fmin)
+        idx = np.arange(n, dtype=np.float64)
+        log_f = log_fmin + ((idx + 0.5) / n) * log_span
+        f_center = np.power(10.0, log_f)
+        return (self.tilt_db_per_oct * np.log2(f_center / TILT_REF_HZ)).astype(np.float64)
 
     def _recompute_smear(self) -> None:
         """Convert peak_smear_oct → Gaussian sigma in *bin index* units, and
@@ -177,6 +204,11 @@ class FFTPostProcessor:
             self.peak_smear_oct = max(0.0, float(peak_smear_oct))
             self._recompute_smear()
 
+    def update_tilt(self, tilt_db_per_oct: float) -> None:
+        with self._lock:
+            self.tilt_db_per_oct = float(tilt_db_per_oct)
+            self.tilt_db = self._build_tilt_db()
+
     def update_autoscale(self, *, tau_attack_s=None, tau_release_s=None,
                          noise_floor=None, strength=None) -> None:
         with self._lock:
@@ -212,7 +244,16 @@ class FFTPostProcessor:
                     db_in[valid_idx].astype(np.float64),
                 )
 
-            # 2. dB → linear with calibration shift so the same noise_floor
+            # 2a. Spectral tilt: add a per-bin dB offset that grows linearly
+            #     with log-frequency (zero at TILT_REF_HZ). Compensates for the
+            #     natural downward slope of music/voice spectra so a single
+            #     global `noise_floor` gates similarly across all bins. Applied
+            #     in-place on `interp_db` so the strength=0 raw-dB-mapped path
+            #     also reflects the tilt.
+            if self.tilt_db_per_oct != 0.0:
+                np.add(self.interp_db, self.tilt_db, out=self.interp_db)
+
+            # 2b. dB → linear with calibration shift so the same noise_floor
             #    gates similarly to the L/M/H AutoScaler.
             np.subtract(self.interp_db, FFT_TO_RMS_CALIBRATION_DB, out=self._lin)
             np.divide(self._lin, 20.0, out=self._lin)

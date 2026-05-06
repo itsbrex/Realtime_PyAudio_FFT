@@ -23,7 +23,7 @@
           <canvas id="viz-lines" width="640" height="200"></canvas>
         </div>
         <div class="viz-card">
-          <div class="viz-title">L/M/H bars + peak hold</div>
+          <div class="viz-title">L/M/H bars + peak hold <label class="inline" title="Visual-only peak-hold decay rate (units per second). Affects the white peak ticks on this graph AND on the FFT graph. Smaller = peaks linger longer; larger = they fall faster. Does not affect DSP or OSC payload."><input type="range" id="peak-decay" min="10" max="200" step="1" style="width:80px;vertical-align:middle" /> <span id="peak-decay-val" style="font-size:11px"></span></label></div>
           <canvas id="viz-bars" width="320" height="200"></canvas>
         </div>
         <div class="viz-card">
@@ -65,8 +65,9 @@
 
         <fieldset>
           <legend>Auto-scaler</legend>
-          <label title="Soft noise gate: signals below this RMS are treated as silence (the auto-scaler won't try to amplify them). Shown in dBFS. Applied to both L/M/H and FFT bins. Bins below the floor stay pinned at the chart bottom (no disappearing bars).">noise gate <input type="range" id="autoscale-floor" min="0" max="1000" step="1" /> <span id="autoscale-floor-val"></span></label>
           <label title="Blend between auto-scaled (1.0) and raw (0.0) output. 100% = full per-bin/per-band peak normalization; 0% = honest dB readout for the FFT and raw RMS for L/M/H. Drives both the L/M/H output AND the FFT visualizer.">strength <input type="range" id="autoscale-strength" min="0" max="100" step="1" /> <span id="autoscale-strength-val"></span></label>
+          <label title="Soft noise gate: signals below this RMS are treated as silence (the auto-scaler won't try to amplify them). Shown in dBFS. Applied to both L/M/H and FFT bins. Bins below the floor stay pinned at the chart bottom (no disappearing bars).">noise gate <input type="range" id="autoscale-floor" min="0" max="1000" step="1" /> <span id="autoscale-floor-val"></span></label>
+          <label title="Spectral tilt that rebalances the noise gate across frequency: +N dB per octave above 1 kHz, -N dB per octave below. On the FFT side it shifts the wire dB before the gate / peak follower; on L/M/H it derives a per-band noise floor from each band's geometric center, so the same global gate fires uniformly across frequency on both pipelines. 0 = flat (honest dB / single global gate); ~3 ≈ pink-noise compensation (typical music feels balanced); higher = more high-end through the gate.">tilt (dB/oct) <input type="range" id="fft-tilt" min="-25" max="50" step="1" /> <span id="fft-tilt-val"></span></label>
         </fieldset>
 
         <fieldset>

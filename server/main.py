@@ -110,6 +110,18 @@ class App:
             "high": (d.high.lo_hz, d.high.hi_hz),
         }
 
+    def _band_centers(self) -> tuple:
+        """Geometric-mean center of each L/M/H band (Hz). Used to evaluate the
+        spectral-tilt offset that derives per-band noise floors in AutoScaler.
+        """
+        import math as _math
+        d = self.cfg.dsp
+        return (
+            _math.sqrt(d.low.lo_hz  * d.low.hi_hz),
+            _math.sqrt(d.mid.lo_hz  * d.mid.hi_hz),
+            _math.sqrt(d.high.lo_hz * d.high.hi_hz),
+        )
+
     def _build_pipeline_for_sr(self, sr: float) -> None:
         cfg = self.cfg
         self.filter_bank = FilterBank(
@@ -125,6 +137,8 @@ class App:
             tau_release_s=cfg.autoscale.tau_release_s,
             noise_floor=cfg.autoscale.noise_floor,
             strength=cfg.autoscale.strength,
+            tilt_db_per_oct=cfg.fft.tilt_db_per_oct,
+            band_centers=self._band_centers(),
         )
 
     def _signal_dsp_published(self) -> None:
@@ -205,6 +219,7 @@ class App:
             hop_period_s=cfg.fft.hop / self.stream.samplerate,
             tau_attack_s=cfg.autoscale.tau_attack_s,
             peak_smear_oct=cfg.fft.peak_smear_oct,
+            tilt_db_per_oct=cfg.fft.tilt_db_per_oct,
         )
         self.fft_worker = FFTWorker(
             ring=self.ring,
@@ -329,6 +344,7 @@ class App:
             "fft_f_min": cfg.fft.f_min,
             "fft_send_raw_db": cfg.fft.send_raw_db,
             "fft_peak_smear_oct": cfg.fft.peak_smear_oct,
+            "fft_tilt_db_per_oct": cfg.fft.tilt_db_per_oct,
             "tau": dict(cfg.dsp.tau),
             "autoscale": {
                 "tau_attack_s": cfg.autoscale.tau_attack_s,
@@ -337,6 +353,7 @@ class App:
                 "strength": cfg.autoscale.strength,
             },
             "ws_snapshot_hz": self.ws.snapshot_hz if self.ws else cfg.ws.snapshot_hz,
+            "ui_peak_decay_per_s": cfg.ui.peak_decay_per_s,
             "device": device,
         }
 
@@ -393,6 +410,7 @@ class App:
                 "hop": cfg.fft.hop,
                 "f_min": cfg.fft.f_min,
                 "peak_smear_oct": cfg.fft.peak_smear_oct,
+                "tilt_db_per_oct": cfg.fft.tilt_db_per_oct,
             },
         }
 
@@ -515,6 +533,8 @@ class App:
                 tau_release_s=self.cfg.autoscale.tau_release_s,
                 noise_floor=self.cfg.autoscale.noise_floor,
                 strength=self.cfg.autoscale.strength,
+                tilt_db_per_oct=self.cfg.fft.tilt_db_per_oct,
+                band_centers=self._band_centers(),
             )
             # Swap into worker
             self.dsp_worker.filter_bank = self.filter_bank

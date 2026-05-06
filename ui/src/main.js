@@ -7,6 +7,7 @@ import { makeLines } from "./viz/lmh_lines.js";
 import { makeBars }  from "./viz/lmh_bars.js";
 import { makeScene } from "./viz/lmh_scene.js";
 import { makeFft }   from "./viz/fft_2d.js";
+import { setupTooltips } from "./tooltips.js";
 
 const controls = setupControls();
 
@@ -143,6 +144,8 @@ let lastDrawT = performance.now();
     "redrawn. The render loop is throttled to the UI refresh rate slider, " +
     "so this should track that value (capped by the monitor's refresh rate).";
 }
+
+setupTooltips();
 
 function frame(now) {
   const targetFps = Math.max(1, store.target_ui_fps || 60);

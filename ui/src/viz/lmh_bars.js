@@ -39,7 +39,7 @@ export function makeBars(canvas) {
       const v = Math.max(0, Math.min(1, vals[i]));
       // peak hold
       if (v > peaks[i]) peaks[i] = v;
-      else peaks[i] = Math.max(0, peaks[i] - 1.5 * dt);
+      else peaks[i] = Math.max(0, peaks[i] - (store.peak_decay_per_s ?? 0.6) * dt);
 
       const x = padX + slot * i + (slot - barW) / 2;
       const baseY = h - padY;

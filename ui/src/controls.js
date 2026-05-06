@@ -120,6 +120,23 @@ export function setupControls() {
   smearEl.addEventListener("pointerup", () => { if (smearDragging) { updateSmear(true); smearDragging = false; } });
   const smearCtl = { setValue: (v) => { smearEl.value = String(Math.round(v * 100)); smearLab.textContent = v <= 0 ? "off" : `${v.toFixed(2)} oct`; } };
 
+  // FFT spectral-tilt slider — slider value is tenths of a dB/oct (-60..120 → -6..12 dB/oct).
+  const tiltEl  = document.getElementById("fft-tilt");
+  const tiltLab = document.getElementById("fft-tilt-val");
+  let tiltDragging = false;
+  const updateTilt = (commit) => {
+    const v = parseFloat(tiltEl.value) / 10;
+    tiltLab.textContent = v === 0 ? "flat" : `${v >= 0 ? "+" : ""}${v.toFixed(1)} dB/oct`;
+    send({ type: "set_fft_tilt", tilt_db_per_oct: v, commit });
+  };
+  tiltEl.addEventListener("input",   () => { tiltDragging = true; updateTilt(false); });
+  tiltEl.addEventListener("change",  () => { updateTilt(true); tiltDragging = false; });
+  tiltEl.addEventListener("pointerup", () => { if (tiltDragging) { updateTilt(true); tiltDragging = false; } });
+  const tiltCtl = { setValue: (v) => {
+    tiltEl.value = String(Math.round(v * 10));
+    tiltLab.textContent = v === 0 ? "flat" : `${v >= 0 ? "+" : ""}${v.toFixed(1)} dB/oct`;
+  } };
+
   const floorEl  = document.getElementById("autoscale-floor");
   const floorLab = document.getElementById("autoscale-floor-val");
   // Linear slider 0..1000; map to 0..0.1 linear floor with curve. Use x^3 for fine low end.
@@ -184,6 +201,26 @@ export function setupControls() {
     },
   };
 
+  // Visual peak-hold decay rate (UI-only; affects bars + FFT viz). Slider value
+  // is hundredths of a unit/sec (1..500 → 0.01..5.0 /s).
+  const peakDecayEl  = document.getElementById("peak-decay");
+  const peakDecayLab = document.getElementById("peak-decay-val");
+  let peakDecayDragging = false;
+  const updatePeakDecay = (commit) => {
+    const v = parseFloat(peakDecayEl.value) / 100;
+    peakDecayLab.textContent = `${v.toFixed(2)}/s`;
+    store.peak_decay_per_s = v;
+    send({ type: "set_peak_decay", peak_decay_per_s: v, commit });
+  };
+  peakDecayEl.addEventListener("input",   () => { peakDecayDragging = true; updatePeakDecay(false); });
+  peakDecayEl.addEventListener("change",  () => { updatePeakDecay(true); peakDecayDragging = false; });
+  peakDecayEl.addEventListener("pointerup", () => { if (peakDecayDragging) { updatePeakDecay(true); peakDecayDragging = false; } });
+  const peakDecayCtl = { setValue: (v) => {
+    peakDecayEl.value = String(Math.round(v * 100));
+    peakDecayLab.textContent = `${v.toFixed(2)}/s`;
+    store.peak_decay_per_s = v;
+  } };
+
   // FFT toggle
   const fftToggle = document.getElementById("fft-toggle");
   fftToggle.addEventListener("change", () => {
@@ -247,9 +284,11 @@ export function setupControls() {
       tauAtkCtl.setValue((m.autoscale.tau_attack_s ?? 0.05) * 1000);
       tauRelCtl.setValue(m.autoscale.tau_release_s || 60);
       smearCtl.setValue(m.fft_peak_smear_oct ?? 0.3);
+      tiltCtl.setValue(m.fft_tilt_db_per_oct ?? 3.0);
       floorCtl.setValue(m.autoscale.noise_floor || 0);
       strengthCtl.setValue(m.autoscale.strength ?? 1.0);
       wsCtl.setValue(m.ws_snapshot_hz || 60);
+      peakDecayCtl.setValue(m.ui_peak_decay_per_s ?? 0.6);
       fftToggle.checked = !!m.fft_enabled;
       if (m.fft_send_raw_db !== undefined) fftRawDbCtl.setValue(!!m.fft_send_raw_db);
     },

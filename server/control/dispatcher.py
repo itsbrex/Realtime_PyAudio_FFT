@@ -66,6 +66,8 @@ class Dispatcher:
         # geometric centers — keep it in sync.
         if self.app.fft_postprocessor is not None:
             self.app.fft_postprocessor.update_bands(self.app.snapshot_meta()["bands"])
+        # Per-band noise gates (L/M/H) are derived from band centers + tilt.
+        self.app.auto_scaler.set_band_centers(self.app._band_centers())
         self.app.persister.request(commit=commit)
         return [], [{"type": "meta", **self.app.snapshot_meta()}]
 
@@ -177,6 +179,7 @@ class Dispatcher:
                 self.app.schedule_filter_retune()
                 if self.app.fft_postprocessor is not None:
                     self.app.fft_postprocessor.update_bands(self.app.snapshot_meta()["bands"])
+                self.app.auto_scaler.set_band_centers(self.app._band_centers())
                 applied.append("dsp.bands")
             except ValueError as e:
                 log.warning("preset dsp bands invalid: %s", e)
@@ -257,6 +260,16 @@ class Dispatcher:
                 applied.append("fft.peak_smear_oct")
             except ValueError as e:
                 log.warning("preset fft.peak_smear_oct invalid: %s", e)
+        if "tilt_db_per_oct" in f:
+            try:
+                v = V.validate_fft_tilt_db_per_oct(f["tilt_db_per_oct"])
+                self.app.cfg.fft.tilt_db_per_oct = v
+                if self.app.fft_postprocessor is not None:
+                    self.app.fft_postprocessor.update_tilt(v)
+                self.app.auto_scaler.set_tilt(v)
+                applied.append("fft.tilt_db_per_oct")
+            except ValueError as e:
+                log.warning("preset fft.tilt_db_per_oct invalid: %s", e)
 
         if not applied:
             raise ValueError(f"preset {name!r} produced no valid fields")
@@ -278,6 +291,24 @@ class Dispatcher:
         self.app.persister.request(commit=commit)
         return [], [{"type": "meta", **self.app.snapshot_meta()}]
 
+    async def _set_peak_decay(self, msg):
+        commit = bool(msg.get("commit", True))
+        v = V.validate_peak_decay_per_s(msg.get("peak_decay_per_s"))
+        self.app.cfg.ui.peak_decay_per_s = v
+        self.app.persister.request(commit=commit)
+        return [], [{"type": "meta", **self.app.snapshot_meta()}]
+
+    async def _set_fft_tilt(self, msg):
+        commit = bool(msg.get("commit", True))
+        v = V.validate_fft_tilt_db_per_oct(msg.get("tilt_db_per_oct"))
+        self.app.cfg.fft.tilt_db_per_oct = v
+        if self.app.fft_postprocessor is not None:
+            self.app.fft_postprocessor.update_tilt(v)
+        # Mirror to L/M/H AutoScaler so the per-band noise gates rebalance too.
+        self.app.auto_scaler.set_tilt(v)
+        self.app.persister.request(commit=commit)
+        return [], [{"type": "meta", **self.app.snapshot_meta()}]
+
     _handlers = {
         "set_fft": _set_fft,
         "set_band": _set_band,
@@ -289,6 +320,8 @@ class Dispatcher:
         "set_ws_snapshot_hz": _set_ws_snapshot_hz,
         "set_fft_send_raw_db": _set_fft_send_raw_db,
         "set_fft_peak_smear": _set_fft_peak_smear,
+        "set_fft_tilt": _set_fft_tilt,
+        "set_peak_decay": _set_peak_decay,
         "list_presets": _list_presets,
         "save_preset": _save_preset,
         "load_preset": _load_preset,

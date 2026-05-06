@@ -23,11 +23,11 @@ const CONFIG = {
     // Outer alpha of the disc gradient. lo=0 -> alphaMin (invisible),
     // lo=1 -> alphaMax. Inner stop scales by midStopAlphaScale.
     alphaMin: 0.1,
-    alphaMax: 0.9,
+    alphaMax: 0.95,
     saturation:    80,   // %
     lightnessMin:  25,   // % at lo=0
-    lightnessMax:  75,   // % at lo=1
-    midStop:           0.65,  // gradient stop position [0..1]
+    lightnessMax:  85,   // % at lo=1
+    midStop:           0.7,  // gradient stop position [0..1]
     midStopAlphaScale: 0.5,
   },
 
@@ -36,7 +36,7 @@ const CONFIG = {
     // mapped from md=0..1. Even at alpha=1, low/high paint over it so it
     // never visually dominates.
     alphaMin: 0.0,
-    alphaMax: 0.85,
+    alphaMax: 0.95,
     saturation: 45,   // %
     lightness:  20,   // % — kept dim so a full-alpha tint doesn't blind
   },
@@ -44,7 +44,7 @@ const CONFIG = {
   high: {
     // Random sample count scales with hi.
     minPoints: 100,
-    maxPoints: 500,
+    maxPoints: 750,
     // Per-point alpha scales with hi (alphaMin at hi=0, alphaMax at hi=1).
     alphaMin: 0.0,
     alphaMax: 1.0,

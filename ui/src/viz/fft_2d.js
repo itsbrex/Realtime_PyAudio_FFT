@@ -31,7 +31,6 @@ const LUT = (() => {
 })();
 
 const SENTINEL_THRESHOLD = -500;
-const PEAK_DECAY_PER_S = 0.6;
 const MIN_BAR_PX = 1;
 
 // X-axis tick candidates (Hz). We'll show only those that fall inside the
@@ -60,6 +59,7 @@ export function makeFft(canvas) {
     const now = performance.now();
     const dt = Math.max(1e-3, Math.min(0.1, (now - lastT) / 1000));
     lastT = now;
+    const peakDecay = store.peak_decay_per_s ?? 0.6;
     const W = canvas.width, H = canvas.height;
     ctx.fillStyle = "#0a0b0d";
     ctx.fillRect(0, 0, W, H);
@@ -102,19 +102,19 @@ export function makeFft(canvas) {
       for (let i = 0; i < n; i++) {
         const raw = bins[i];
         if (raw < SENTINEL_THRESHOLD) {
-          peaks[i] = Math.max(0, peaks[i] - PEAK_DECAY_PER_S * dt);
+          peaks[i] = Math.max(0, peaks[i] - peakDecay * dt);
           continue; // gap — honest "no rfft bin mapped here"
         }
         const v = Math.max(0, Math.min(1, (raw - floor) / span));
         if (v > peaks[i]) peaks[i] = v;
-        else peaks[i] = Math.max(0, peaks[i] - PEAK_DECAY_PER_S * dt);
+        else peaks[i] = Math.max(0, peaks[i] - peakDecay * dt);
         paintBar(i, v, plotX, plotY, plotH, barW, /*minPx*/ 0);
       }
     } else {
       for (let i = 0; i < n; i++) {
         const v = Math.max(0, Math.min(1, bins[i]));
         if (v > peaks[i]) peaks[i] = v;
-        else peaks[i] = Math.max(0, peaks[i] - PEAK_DECAY_PER_S * dt);
+        else peaks[i] = Math.max(0, peaks[i] - peakDecay * dt);
         paintBar(i, v, plotX, plotY, plotH, barW, MIN_BAR_PX);
       }
     }

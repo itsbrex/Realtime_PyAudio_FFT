@@ -67,6 +67,11 @@ class FftCfg:
     # values share normalization across neighboring bins so a single-frequency
     # spike still reads as taller-than-average against its spectral context.
     peak_smear_oct: float = 0.3
+    # Spectral tilt added to the wire dB before the noise gate / peak follower:
+    # +tilt_db_per_oct dB per octave above 1 kHz, -tilt_db_per_oct dB per octave
+    # below. Compensates for the natural downward slope of music/voice spectra
+    # so a single global noise_floor gates uniformly across frequency. 0 disables.
+    tilt_db_per_oct: float = 3.0
     # When True, OSC + WS send the raw wire dB stream. When False (default),
     # they send the post-processed stream (smoothed, peak-normalized, gated,
     # tanh-compressed, strength-blended) — same semantics as L/M/H over OSC.
@@ -86,6 +91,13 @@ class OscCfg:
 
 
 @dataclass
+class UiCfg:
+    # Visual peak-hold decay rate (per second) for the L/M/H bars and FFT
+    # visualizers. Pure UI-side concern — does not affect DSP or OSC payload.
+    peak_decay_per_s: float = 0.6
+
+
+@dataclass
 class WsCfg:
     enabled: bool = True
     host: str = "127.0.0.1"
@@ -102,6 +114,7 @@ class Config:
     fft: FftCfg = field(default_factory=FftCfg)
     osc: OscCfg = field(default_factory=OscCfg)
     ws: WsCfg = field(default_factory=WsCfg)
+    ui: UiCfg = field(default_factory=UiCfg)
 
 
 def _bands_dict(cfg: DspCfg) -> dict:
@@ -126,7 +139,7 @@ def load_config(path: Path | str) -> Config:
         log.warning("config root is not a mapping; using defaults")
         return cfg
 
-    known = {"audio", "dsp", "autoscale", "fft", "osc", "ws"}
+    known = {"audio", "dsp", "autoscale", "fft", "osc", "ws", "ui"}
     for k in raw:
         if k not in known:
             log.warning("config: unknown top-level key %r (ignored)", k)
@@ -219,6 +232,11 @@ def load_config(path: Path | str) -> Config:
         v = float(f_raw["peak_smear_oct"])
         if 0.0 <= v <= 3.0:
             cfg.fft.peak_smear_oct = v
+    if "tilt_db_per_oct" in f_raw:
+        try:
+            cfg.fft.tilt_db_per_oct = V.validate_fft_tilt_db_per_oct(f_raw["tilt_db_per_oct"])
+        except Exception as e:
+            log.warning("config fft.tilt_db_per_oct invalid (%s); using default", e)
     if isinstance(f_raw.get("send_raw_db"), bool):
         cfg.fft.send_raw_db = f_raw["send_raw_db"]
 
@@ -250,6 +268,14 @@ def load_config(path: Path | str) -> Config:
             cfg.ws.snapshot_hz = V.validate_ws_snapshot_hz(w_raw["snapshot_hz"])
     except Exception as e:
         log.warning("config ws.snapshot_hz invalid (%s); using default", e)
+
+    # ui
+    u_raw = raw.get("ui", {}) or {}
+    try:
+        if "peak_decay_per_s" in u_raw:
+            cfg.ui.peak_decay_per_s = V.validate_peak_decay_per_s(u_raw["peak_decay_per_s"])
+    except Exception as e:
+        log.warning("config ui.peak_decay_per_s invalid (%s); using default", e)
 
     return cfg
 

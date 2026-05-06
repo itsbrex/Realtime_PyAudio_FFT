@@ -41,6 +41,10 @@ export const store = {
   // RAF loop in main.js throttles draws to this rate.
   target_ui_fps: 60,
 
+  // Visual peak-hold decay rate (units / second) for both the L/M/H bars and
+  // the FFT viz. Server-authoritative — mirrored from meta.ui_peak_decay_per_s.
+  peak_decay_per_s: 0.6,
+
   // Server-side snapshot rate measurement (only JSON snapshot messages are
   // counted, so the FFT enable toggle doesn't change this number).
   snapshotTimestamps: [], // last 60 perf.now() of any inbound "snapshot" msg
