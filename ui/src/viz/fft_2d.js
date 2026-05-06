@@ -25,14 +25,14 @@ import { store, recordVizPerf } from "../store.js";
 import { LMH, LMH_ORDER } from "../colors.js";
 import { send } from "../ws.js";
 
-const LUT = (() => {
-  const out = new Uint8ClampedArray(256 * 3);
+const LUT_STR = (() => {
+  const out = new Array(256);
   for (let i = 0; i < 256; i++) {
     const t = i / 255;
     const r = Math.round(255 * Math.min(1, Math.max(0, -0.2 + 1.6 * t)));
     const g = Math.round(255 * (0.1 + 0.85 * Math.sin(Math.PI * t)));
     const b = Math.round(255 * Math.max(0, 1 - 1.6 * t + 0.5 * Math.pow(t, 4)));
-    out[i*3] = r; out[i*3+1] = g; out[i*3+2] = b;
+    out[i] = `rgb(${r},${g},${b})`;
   }
   return out;
 })();
@@ -62,6 +62,7 @@ function fmtHz(v) {
 export function makeFft(canvas) {
   const ctx = canvas.getContext("2d", { alpha: false });
   let peaks = null;
+  let _vCache = null;
   let lastT = performance.now();
 
   // Band-edit state — mirrors meta.bands; only updated from meta when not
@@ -77,11 +78,24 @@ export function makeFft(canvas) {
   // CSS-px layout from the most recent draw, used by pointer hit-testing.
   let layout = null;
 
+  // Cached CSS-px size, updated by ResizeObserver — avoids forcing a layout
+  // read (getBoundingClientRect) every frame.
+  let cssW = 0, cssH = 0;
+  {
+    const r0 = canvas.getBoundingClientRect();
+    cssW = r0.width; cssH = r0.height;
+    const ro = new ResizeObserver((entries) => {
+      const e = entries[entries.length - 1];
+      const cr = e.contentRect;
+      cssW = cr.width; cssH = cr.height;
+    });
+    ro.observe(canvas);
+  }
+
   function fitCanvas() {
     const dpr = window.devicePixelRatio || 1;
-    const r = canvas.getBoundingClientRect();
-    const w = Math.max(1, Math.floor(r.width  * dpr));
-    const h = Math.max(1, Math.floor(r.height * dpr));
+    const w = Math.max(1, Math.floor(cssW * dpr));
+    const h = Math.max(1, Math.floor(cssH * dpr));
     if (canvas.width !== w || canvas.height !== h) {
       canvas.width = w; canvas.height = h;
     }
@@ -120,7 +134,10 @@ export function makeFft(canvas) {
       recordVizPerf("fft", performance.now() - t0);
       return;
     }
-    if (!peaks || peaks.length !== n) peaks = new Float32Array(n);
+    if (!peaks || peaks.length !== n) {
+      peaks = new Float32Array(n);
+      _vCache = new Float32Array(n);
+    }
 
     const meta = store.meta || {};
     const rawDb = !!meta.fft_send_raw_db;
@@ -131,7 +148,13 @@ export function makeFft(canvas) {
     const logSpan = Math.max(1e-6, Math.log10(fMax) - logFmin);
 
     // ---------------- bars ----------------
+    // Two-pass paint: bar pass switches fillStyle per bin (precomputed LUT
+    // strings — no per-frame allocation, browser caches the parsed colors),
+    // peak-tick pass uses a single fillStyle for all ticks.
     const barW = plotW / n;
+    const drawW = Math.max(1, barW - 1);
+    const minBarPx = rawDb ? 0 : MIN_BAR_PX;
+    let drewAnyBar = false;
     if (rawDb) {
       const floor = meta.fft_db_floor ?? -60;
       const ceiling = meta.fft_db_ceiling ?? 0;
@@ -140,29 +163,51 @@ export function makeFft(canvas) {
         const raw = bins[i];
         if (raw < SENTINEL_THRESHOLD) {
           peaks[i] = Math.max(0, peaks[i] - peakDecay * dt);
+          // Mark as sentinel so the peak-tick pass skips it.
+          // Using NaN is unambiguous since v is always finite [0,1].
+          _vCache[i] = NaN;
           continue;
         }
         const v = Math.max(0, Math.min(1, (raw - floor) / span));
         if (v > peaks[i]) peaks[i] = v;
         else peaks[i] = Math.max(0, peaks[i] - peakDecay * dt);
-        paintBar(i, v, plotX, plotY, plotH, barW, 0);
+        const cidx = Math.min(255, Math.max(0, (v * 255) | 0));
+        ctx.fillStyle = LUT_STR[cidx];
+        const barH = Math.max(minBarPx, v * plotH);
+        ctx.fillRect(plotX + i * barW, plotY + plotH - barH, drawW, barH);
+        _vCache[i] = v;
+        drewAnyBar = true;
       }
     } else {
       for (let i = 0; i < n; i++) {
         const v = Math.max(0, Math.min(1, bins[i]));
         if (v > peaks[i]) peaks[i] = v;
         else peaks[i] = Math.max(0, peaks[i] - peakDecay * dt);
-        paintBar(i, v, plotX, plotY, plotH, barW, MIN_BAR_PX);
+        const cidx = Math.min(255, Math.max(0, (v * 255) | 0));
+        ctx.fillStyle = LUT_STR[cidx];
+        const barH = Math.max(minBarPx, v * plotH);
+        ctx.fillRect(plotX + i * barW, plotY + plotH - barH, drawW, barH);
+        _vCache[i] = v;
+        drewAnyBar = true;
+      }
+    }
+
+    // Peak ticks — one fillStyle for all of them.
+    if (drewAnyBar) {
+      ctx.fillStyle = "rgba(255,255,255,0.75)";
+      for (let i = 0; i < n; i++) {
+        if (_vCache[i] !== _vCache[i]) continue; // NaN check: skip sentinels
+        const py = plotY + plotH - peaks[i] * plotH;
+        ctx.fillRect(plotX + i * barW, py - 1, drawW, 2);
       }
     }
 
     // ---------------- band overlay (interactive when `interactive`) ---------
     const fMaxHard = Math.min(22000, 0.45 * sr);
-    const cssRect = canvas.getBoundingClientRect();
     const cssPlotX = padL_css;
     const cssPlotY = padT_css;
-    const cssPlotW = Math.max(1, cssRect.width  - padL_css - padR_css);
-    const cssPlotH = Math.max(1, cssRect.height - padT_css - padB_css);
+    const cssPlotW = Math.max(1, cssW - padL_css - padR_css);
+    const cssPlotH = Math.max(1, cssH - padT_css - padB_css);
     layout = {
       cssPlotX, cssPlotY, cssPlotW, cssPlotH,
       fMin, fMax, logFmin, logSpan, sr, fMaxHard,
@@ -175,17 +220,6 @@ export function makeFft(canvas) {
     drawXAxis(fMin, fMax, logFmin, logSpan, plotX, plotY, plotW, plotH, padB, dpr);
 
     recordVizPerf("fft", performance.now() - t0);
-  }
-
-  function paintBar(i, v, plotX, plotY, plotH, barW, minPx) {
-    const barH = Math.max(minPx, v * plotH);
-    const cidx = Math.min(255, Math.max(0, (v * 255) | 0));
-    const r = LUT[cidx*3], g = LUT[cidx*3+1], b = LUT[cidx*3+2];
-    ctx.fillStyle = `rgb(${r},${g},${b})`;
-    ctx.fillRect(plotX + i * barW, plotY + plotH - barH, Math.max(1, barW - 1), barH);
-    const py = plotY + plotH - peaks[i] * plotH;
-    ctx.fillStyle = "rgba(255,255,255,0.75)";
-    ctx.fillRect(plotX + i * barW, py - 1, Math.max(1, barW - 1), 2);
   }
 
   function drawBandsOverlay(meta, plotX, plotY, plotW, plotH, dpr, fMin, fMax, logFmin, logSpan) {

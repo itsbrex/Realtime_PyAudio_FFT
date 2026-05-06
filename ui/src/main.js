@@ -146,23 +146,32 @@ let lastDrawT = performance.now();
 // Tooltips for the top-right badges so it's clear what each number means.
 {
   const srv = document.getElementById("server-fps");
-  if (srv) srv.title =
-    "Server snapshot rate — how often the server is pushing L/M/H snapshot " +
-    "JSON over the WebSocket. Tracks the UI refresh rate slider. Independent " +
-    "of the FFT enable toggle (FFT frames are sent as separate binary " +
-    "messages and are NOT counted here).";
+  if (srv) srv.title = [
+    "**Server snapshot rate.** How often the server is pushing L/M/H snapshot JSON over the WebSocket.",
+    "",
+    "Tracks the UI refresh rate slider.",
+    "",
+    "*Independent of the FFT enable toggle — FFT frames are sent as separate binary messages and are not counted here.*",
+  ].join("\n");
   const ui = document.getElementById("ui-fps");
-  if (ui) ui.title =
-    "Browser render rate — how often the canvases are actually being " +
-    "redrawn. The render loop is throttled to the UI refresh rate slider, " +
-    "so this should track that value (capped by the monitor's refresh rate).";
+  if (ui) ui.title = [
+    "**Browser render rate.** How often the canvases are actually being redrawn.",
+    "",
+    "The render loop is throttled to the UI refresh rate slider, so this should track that value (capped by the monitor's refresh rate).",
+  ].join("\n");
 }
 
 setupTooltips();
 
 function frame(now) {
   const targetFps = Math.max(1, store.target_ui_fps || 60);
-  const minPeriod = 1000 / targetFps - 0.5; // small slack so 60 fps RAF hits 60
+  // Slack of ~half a vsync (8 ms) absorbs rAF jitter — otherwise a single
+  // 15.x-ms inter-frame interval (well within normal scheduling noise on a
+  // 60Hz panel) drops us to the next vsync and locks us at 30 fps. Half-period
+  // is the standard Nyquist-style threshold: draw if we're closer to the
+  // target tick than to the previous one.
+  const period = 1000 / targetFps;
+  const minPeriod = period - Math.min(8, period * 0.49);
   const elapsed = now - lastDrawT;
   if (elapsed >= minPeriod) {
     // Record the inter-draw interval (not the inter-RAF interval) so the

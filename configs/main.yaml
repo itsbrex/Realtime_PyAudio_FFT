@@ -49,8 +49,8 @@ ws:
 ui:
   peak_decay_per_s: 0.6
   layout:
-    split_x: 0.3267018397879763
-    split_y: 0.47151632056008824
+    split_x: 0.30864100328607513
+    split_y: 0.4959065644625273
     quadrants:
     - bars
     - lines

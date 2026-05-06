@@ -68,11 +68,22 @@ export function makeLines(canvas) {
     };
   }
 
+  let cssW = 0, cssH = 0;
+  {
+    const r0 = canvas.getBoundingClientRect();
+    cssW = r0.width; cssH = r0.height;
+    const ro = new ResizeObserver((entries) => {
+      const e = entries[entries.length - 1];
+      const cr = e.contentRect;
+      cssW = cr.width; cssH = cr.height;
+    });
+    ro.observe(canvas);
+  }
+
   function fitCanvas() {
     const dpr = window.devicePixelRatio || 1;
-    const r = canvas.getBoundingClientRect();
-    const w = Math.max(1, Math.floor(r.width  * dpr));
-    const h = Math.max(1, Math.floor(r.height * dpr));
+    const w = Math.max(1, Math.floor(cssW * dpr));
+    const h = Math.max(1, Math.floor(cssH * dpr));
     if (canvas.width !== w || canvas.height !== h) {
       canvas.width = w; canvas.height = h;
     }
@@ -105,39 +116,40 @@ export function makeLines(canvas) {
     return k;
   }
 
-  function tracePolyline(arr, K, w, h, histMs, nowRel) {
-    const latest = (head - 1 + N_MAX) % N_MAX;
-    for (let i = 0; i < K; i++) {
-      // i=0 → oldest (leftmost in window); i=K-1 → newest (rightmost, x≈w).
-      const idx = (latest - (K - 1 - i) + N_MAX) % N_MAX;
-      const v = arr[idx];
-      const x = w * (1 - (nowRel - ts[idx]) / histMs);
-      const y = h - (v < 0 ? 0 : v > 1 ? 1 : v) * h;
-      if (i === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    }
-  }
+  // Scratch arrays for one series' (x,y) — sized lazily.
+  let _xs = new Float32Array(N_MAX);
+  let _ys = new Float32Array(N_MAX);
 
   function drawSeries(arr, fillGrad, strokeGrad, K, w, h, dpr, histMs, nowRel) {
     if (K < 2) return;
     const latest = (head - 1 + N_MAX) % N_MAX;
-    const oldestIdx  = (latest - (K - 1) + N_MAX) % N_MAX;
-    const firstX = w * (1 - (nowRel - ts[oldestIdx]) / histMs);
-    const lastX  = w * (1 - (nowRel - ts[latest])    / histMs);
+    // Walk the ring once; record (x,y) so we can issue a stroke + fill on
+    // the same Path2D without re-tracing.
+    for (let i = 0; i < K; i++) {
+      const idx = (latest - (K - 1 - i) + N_MAX) % N_MAX;
+      const v = arr[idx];
+      _xs[i] = w * (1 - (nowRel - ts[idx]) / histMs);
+      _ys[i] = h - (v < 0 ? 0 : v > 1 ? 1 : v) * h;
+    }
+    const firstX = _xs[0];
+    const lastX  = _xs[K - 1];
 
-    // Filled area: polyline closed back to baseline at the same x range as the
-    // visible data — empty portion of the canvas stays empty.
+    // Fill first (closed to baseline), stroke on top — preserves original
+    // layering. The expensive part of the old code was the per-point ring
+    // index + timestamp math; doing that once and replaying lineTo's twice
+    // is cheap.
     ctx.beginPath();
-    tracePolyline(arr, K, w, h, histMs, nowRel);
+    ctx.moveTo(_xs[0], _ys[0]);
+    for (let i = 1; i < K; i++) ctx.lineTo(_xs[i], _ys[i]);
     ctx.lineTo(lastX,  h);
     ctx.lineTo(firstX, h);
     ctx.closePath();
     ctx.fillStyle = fillGrad;
     ctx.fill();
 
-    // Stroke (no bottom edge).
     ctx.beginPath();
-    tracePolyline(arr, K, w, h, histMs, nowRel);
+    ctx.moveTo(_xs[0], _ys[0]);
+    for (let i = 1; i < K; i++) ctx.lineTo(_xs[i], _ys[i]);
     ctx.strokeStyle = strokeGrad;
     ctx.lineWidth = 1.5 * dpr;
     ctx.lineJoin = "round";

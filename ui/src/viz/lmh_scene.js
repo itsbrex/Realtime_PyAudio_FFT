@@ -64,11 +64,22 @@ const CONFIG = {
 export function makeScene(canvas) {
   const ctx = canvas.getContext("2d", { alpha: false });
 
+  let cssW = 0, cssH = 0;
+  {
+    const r0 = canvas.getBoundingClientRect();
+    cssW = r0.width; cssH = r0.height;
+    const ro = new ResizeObserver((entries) => {
+      const e = entries[entries.length - 1];
+      const cr = e.contentRect;
+      cssW = cr.width; cssH = cr.height;
+    });
+    ro.observe(canvas);
+  }
+
   function fitCanvas() {
     const dpr = window.devicePixelRatio || 1;
-    const r = canvas.getBoundingClientRect();
-    const w = Math.max(1, Math.floor(r.width  * dpr));
-    const h = Math.max(1, Math.floor(r.height * dpr));
+    const w = Math.max(1, Math.floor(cssW * dpr));
+    const h = Math.max(1, Math.floor(cssH * dpr));
     if (canvas.width !== w || canvas.height !== h) {
       canvas.width = w; canvas.height = h;
     }
