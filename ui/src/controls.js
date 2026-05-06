@@ -71,7 +71,9 @@ export function setupControls() {
 
   // Bandpass edges are now exclusively controlled via the freq_axis widget.
 
-  // Tau (UI in ms; protocol in seconds)
+  // Tau (UI in ms; protocol in seconds). The L/M/H envelope follower is
+  // ASYMMETRIC: separate per-band release τ (slow, smooths sustained content)
+  // and attack τ (fast, lets transients through).
   const tauEls = {
     low:  document.getElementById("tau-low"),
     mid:  document.getElementById("tau-mid"),
@@ -92,6 +94,27 @@ export function setupControls() {
         high: readSlider(tauEls.high) / 1000,
       };
       return { type: "set_smoothing", tau };
+    });
+  }
+  const tauAtkBandEls = {
+    low:  document.getElementById("tau-attack-low"),
+    mid:  document.getElementById("tau-attack-mid"),
+    high: document.getElementById("tau-attack-high"),
+  };
+  const tauAtkBandLabs = {
+    low:  document.getElementById("tau-attack-low-val"),
+    mid:  document.getElementById("tau-attack-mid-val"),
+    high: document.getElementById("tau-attack-high-val"),
+  };
+  const tauAtkBandCtls = {};
+  for (const k of ["low", "mid", "high"]) {
+    tauAtkBandCtls[k] = bindDragAware(tauAtkBandEls[k], tauAtkBandLabs[k], fmtMs, () => {
+      const tau_attack = {
+        low:  readSlider(tauAtkBandEls.low)  / 1000,
+        mid:  readSlider(tauAtkBandEls.mid)  / 1000,
+        high: readSlider(tauAtkBandEls.high) / 1000,
+      };
+      return { type: "set_smoothing", tau_attack };
     });
   }
 
@@ -139,19 +162,29 @@ export function setupControls() {
 
   const floorEl  = document.getElementById("autoscale-floor");
   const floorLab = document.getElementById("autoscale-floor-val");
-  // Linear slider 0..1000; map to 0..0.1 linear floor with curve. Use x^3 for fine low end.
-  const sliderToFloor = (s) => Math.pow(s / 1000, 3) * 0.1;
-  const floorToSlider = (f) => 1000 * Math.pow(Math.max(0, f) / 0.1, 1 / 3);
+  // Slider is linear in dBFS across [FLOOR_DB_MIN, FLOOR_DB_MAX]; convert to linear amplitude.
+  const FLOOR_DB_MIN = -140, FLOOR_DB_MAX = -25;
+  const sliderToFloor = (s) => {
+    const db = FLOOR_DB_MIN + (s / 1000) * (FLOOR_DB_MAX - FLOOR_DB_MIN);
+    return Math.pow(10, db / 20);
+  };
+  const floorToSlider = (f) => {
+    if (f <= 0) return 0;
+    const db = 20 * Math.log10(f);
+    const clamped = Math.max(FLOOR_DB_MIN, Math.min(FLOOR_DB_MAX, db));
+    return 1000 * (clamped - FLOOR_DB_MIN) / (FLOOR_DB_MAX - FLOOR_DB_MIN);
+  };
+  const fmtFloor = (f) => (f <= 0 ? "off" : `${(20 * Math.log10(f)).toFixed(0)} dBFS`);
   let floorDragging = false;
   const updateFloor = (commit) => {
     const v = sliderToFloor(parseFloat(floorEl.value));
-    floorLab.textContent = v <= 0 ? "off" : `${(20 * Math.log10(v)).toFixed(0)} dBFS`;
+    floorLab.textContent = fmtFloor(v);
     send({ type: "set_autoscale", noise_floor: v, commit });
   };
   floorEl.addEventListener("input",   () => { floorDragging = true; updateFloor(false); });
   floorEl.addEventListener("change",  () => { updateFloor(true); floorDragging = false; });
   floorEl.addEventListener("pointerup", () => { if (floorDragging) { updateFloor(true); floorDragging = false; } });
-  const floorCtl = { setValue: (f) => { floorEl.value = String(floorToSlider(f)); floorLab.textContent = f <= 0 ? "off" : `${(20 * Math.log10(f)).toFixed(0)} dBFS`; } };
+  const floorCtl = { setValue: (f) => { floorEl.value = String(floorToSlider(f)); floorLab.textContent = fmtFloor(f); } };
 
   // Master gain — final post-processing multiplier. Slider range 50..150 →
   // 0.5..1.5 (1.0 centered). At gain ≤ 1.0 the slider uses the default UI
@@ -337,6 +370,10 @@ export function setupControls() {
       tauCtls.low.setValue((m.tau.low || 0) * 1000);
       tauCtls.mid.setValue((m.tau.mid || 0) * 1000);
       tauCtls.high.setValue((m.tau.high || 0) * 1000);
+      const ta = m.tau_attack || {};
+      tauAtkBandCtls.low.setValue((ta.low  || 0) * 1000);
+      tauAtkBandCtls.mid.setValue((ta.mid  || 0) * 1000);
+      tauAtkBandCtls.high.setValue((ta.high || 0) * 1000);
       tauAtkCtl.setValue((m.autoscale.tau_attack_s ?? 0.05) * 1000);
       tauRelCtl.setValue(m.autoscale.tau_release_s || 60);
       smearCtl.setValue(m.fft_peak_smear_oct ?? 0.3);

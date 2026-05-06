@@ -23,20 +23,35 @@ def block_rms(x: np.ndarray) -> float:
 
 
 class ExpSmoother:
-    """Per-band one-pole exponential smoother with per-band tau.
+    """Per-band ASYMMETRIC one-pole envelope follower.
 
-    alpha_band = 1 - exp(-blocksize / (sr * tau_band)).
+    Two per-band time constants — fast ATTACK on rising values, slow RELEASE
+    on falling values:
+        diff = rms - v
+        alpha = alpha_attack[band]   if diff > 0
+                alpha_release[band]  otherwise
+        v += alpha * diff
+
+    Why asymmetric: a symmetric smoother forces a single τ to cover both
+    "catch the kick onset" (wants ~ms) and "don't bounce on harmonic flutter
+    in a sustained note" (wants ~100 ms). No single value wins. Decoupling
+    them lets onsets pass through with attack-shaped latency (a few ms) while
+    sustained material averages out over the release τ. This is the standard
+    envelope-follower / VU-meter shape, and it's what every audio compressor
+    sidechain uses for the same perceptual reason.
+
+    alpha = 1 - exp(-blocksize / (sr * tau)).
     """
 
-    def __init__(self, sr: float, blocksize: int, tau: dict):
+    def __init__(self, sr: float, blocksize: int, tau: dict, tau_attack: dict):
         self.sr = float(sr)
         self.blocksize = int(blocksize)
         self._values = np.zeros(3, dtype=np.float64)
-        self.set_tau(tau)
+        self.set_tau(tau, tau_attack)
 
-    def set_tau(self, tau: dict) -> None:
+    def set_tau(self, tau: dict, tau_attack: dict) -> None:
         dt = self.blocksize / self.sr
-        self._alpha = np.array(
+        self._alpha_release = np.array(
             [
                 1.0 - math.exp(-dt / max(float(tau["low"]),  1e-3)),
                 1.0 - math.exp(-dt / max(float(tau["mid"]),  1e-3)),
@@ -44,13 +59,25 @@ class ExpSmoother:
             ],
             dtype=np.float64,
         )
+        self._alpha_attack = np.array(
+            [
+                1.0 - math.exp(-dt / max(float(tau_attack["low"]),  1e-3)),
+                1.0 - math.exp(-dt / max(float(tau_attack["mid"]),  1e-3)),
+                1.0 - math.exp(-dt / max(float(tau_attack["high"]), 1e-3)),
+            ],
+            dtype=np.float64,
+        )
 
     def update(self, rms_lo: float, rms_md: float, rms_hi: float) -> tuple[float, float, float]:
-        a = self._alpha
+        # Unrolled 3-band asymmetric one-pole. Python scalars + per-element
+        # branching — for n=3 this is trivially cheap and avoids the overhead
+        # of allocating 3-element numpy temporaries on every audio block.
         v = self._values
-        v[0] += a[0] * (rms_lo - v[0])
-        v[1] += a[1] * (rms_md - v[1])
-        v[2] += a[2] * (rms_hi - v[2])
+        aa = self._alpha_attack
+        ar = self._alpha_release
+        d = rms_lo - v[0]; v[0] += (aa[0] if d > 0.0 else ar[0]) * d
+        d = rms_md - v[1]; v[1] += (aa[1] if d > 0.0 else ar[1]) * d
+        d = rms_hi - v[2]; v[2] += (aa[2] if d > 0.0 else ar[2]) * d
         return float(v[0]), float(v[1]), float(v[2])
 
     @property
@@ -63,6 +90,8 @@ class ExpSmoother:
 
 TILT_REF_HZ = 1000.0
 EPS = 1e-12
+
+_DEFAULT_BANDS = {"low": (40.0, 250.0), "mid": (250.0, 2000.0), "high": (2000.0, 16000.0)}
 
 
 class AutoScaler:
@@ -80,25 +109,65 @@ class AutoScaler:
     (= 10^(tilt_db/20), where tilt_db = tilt_db_per_oct · log2(f_c / 1 kHz)).
     Same shape as the FFT post-processor, where tilt is added in dB before
     the dB→linear conversion — so a single global noise_floor gates both
-    pipelines identically.
+    pipelines identically (for tones).
+
+    For broadband noise, the integrated band power scales with band width,
+    so the same `noise_floor` value (which gates the FFT viz per-bin) does
+    NOT gate the L/M/H aggregate equivalently — wider bands integrate more
+    sub-floor noise and read higher. To keep the single knob coherent, we
+    subtract a per-band noise budget before everything else:
+        clean_rms² = max(0, rms² − noise_floor² · n_bins_eff)
+    where `n_bins_eff = max(1, K_lin / N_log)` is the average count of
+    linear rfft bins per FFT-viz log bin in this band (`K_avg_log`), with
+    a 1-bin floor for narrow bands where log bins are smaller than rfft
+    bins (low/mid). Semantically: this is "one log bin's worth of
+    floor-level noise", which is exactly the threshold the FFT viz's
+    per-bin gate uses (a log bin reads visible iff its linear amplitude
+    exceeds `nf`, i.e. its summed-over-K_avg-linear-bins power exceeds
+    `K_avg · nf²`). Anything visible on a single log bin in the FFT
+    contributes ≥ this much to integrated band power and survives.
+    Subtracting the full `K_lin · nf²` (the broadband-at-floor budget)
+    over-penalizes narrowband content in wide bands by ~`N_log` —
+    e.g. for the high band, K_lin ≈ 274 vs K_avg ≈ 9 — and would
+    wipe out snare hits that show clearly on the FFT spectrum. The
+    downstream `v − nf` gate + slow peak follower take care of any
+    residual broadband bleed.
     """
 
     def __init__(self, sr: float, blocksize: int,
                  tau_attack_s: float = 0.05, tau_release_s: float = 60.0,
                  noise_floor: float = 1e-3, strength: float = 1.0,
                  tilt_db_per_oct: float = 0.0,
-                 band_centers: tuple = (100.0, 1000.0, 8000.0),
+                 bands: dict | None = None,
+                 n_fft_window: int = 1024,
+                 fft_n_bins: int = 192,
+                 fft_f_min: float = 30.0,
                  db_floor: float = -60.0, db_ceiling: float = 0.0):
         self.sr = float(sr)
         self.blocksize = int(blocksize)
         self.noise_floor = max(0.0, float(noise_floor))
         self.strength = max(0.0, min(1.0, float(strength)))
         self.tilt_db_per_oct = float(tilt_db_per_oct)
-        self._band_centers = np.asarray(band_centers, dtype=np.float64)
+        self._bands = self._normalize_bands(bands if bands is not None else _DEFAULT_BANDS)
+        self._n_fft_window = max(1, int(n_fft_window))
+        self._fft_n_bins = max(1, int(fft_n_bins))
+        self._fft_f_min = max(1e-3, float(fft_f_min))
+        self._band_centers = np.zeros(3, dtype=np.float64)
+        self._band_widths = np.zeros(3, dtype=np.float64)
+        self._log_bins_per_band = np.zeros(3, dtype=np.float64)
+        # Per-band 1/sqrt(K_lin), used to express integrated band RMS as
+        # "average per-rfft-bin amplitude" in the strength<1 baseline so it
+        # reads the same as an FFT log bin in the same frequency range.
+        self._per_bin_factor = np.ones(3, dtype=np.float64)
+        self._recompute_band_geom()
+        self._recompute_log_bin_geom()
+        self._recompute_per_bin_factor()
         self.db_floor = float(db_floor)
         self.db_ceiling = float(db_ceiling)
         self._tilt_lin = np.ones(3, dtype=np.float64)
-        self._v = np.zeros(3, dtype=np.float64)         # tilted input
+        self._noise_pwr_per_band = np.zeros(3, dtype=np.float64)  # nf² · bins_in_band
+        self._v = np.zeros(3, dtype=np.float64)         # tilted, noise-subtracted input
+        self._v2 = np.zeros(3, dtype=np.float64)        # scratch for v² / clean_rms
         self._diff = np.zeros(3, dtype=np.float64)      # peak follower delta
         self._alpha = np.zeros(3, dtype=np.float64)     # per-band attack/release
         self._mask = np.zeros(3, dtype=bool)            # rising-edge mask (preallocated)
@@ -109,7 +178,18 @@ class AutoScaler:
         self.tau_attack_s = float(tau_attack_s)
         self.tau_release_s = float(tau_release_s)
         self._recompute_tilt_lin()
+        self._recompute_noise_pwr()
         self.set_taus(tau_attack_s=self.tau_attack_s, tau_release_s=self.tau_release_s)
+
+    @staticmethod
+    def _normalize_bands(bands: dict) -> dict:
+        return {k: (float(bands[k][0]), float(bands[k][1])) for k in ("low", "mid", "high")}
+
+    def _recompute_band_geom(self) -> None:
+        for i, name in enumerate(("low", "mid", "high")):
+            lo, hi = self._bands[name]
+            self._band_centers[i] = math.sqrt(max(lo, 1e-3) * max(hi, 1e-3))
+            self._band_widths[i] = max(hi - lo, 0.0)
 
     def _recompute_tilt_lin(self) -> None:
         if self.tilt_db_per_oct == 0.0:
@@ -117,6 +197,55 @@ class AutoScaler:
             return
         tilt_db = self.tilt_db_per_oct * np.log2(np.maximum(self._band_centers, 1e-3) / TILT_REF_HZ)
         np.power(10.0, tilt_db / 20.0, out=self._tilt_lin)
+
+    def _recompute_per_bin_factor(self) -> None:
+        # K_lin = BW · n_fft_window / sr — count of linear rfft bins in the
+        # band. _per_bin_factor = 1/sqrt(max(K_lin, 1)). For broadband-uniform
+        # input at amplitude `a` per linear bin, rms_band = a · sqrt(K_lin),
+        # so rms_band · _per_bin_factor = a — i.e. what an FFT log bin in
+        # this range would read. Floored at 1 so very narrow bands (K_lin < 1)
+        # don't artificially boost the reading.
+        scale = self._n_fft_window / max(self.sr, 1e-3)
+        for i in range(3):
+            k_lin = max(self._band_widths[i] * scale, 1.0)
+            self._per_bin_factor[i] = 1.0 / math.sqrt(k_lin)
+
+    def _recompute_log_bin_geom(self) -> None:
+        # FFT-viz log-bin count inside each band. log_bins_per_octave is
+        # constant across the spectrum; multiply by the band's octave width
+        # to get its log-bin count. Used to cap the linear-bin noise budget.
+        nyq = max(self.sr / 2.0, 1e-3)
+        log_oct_total = math.log2(max(nyq / self._fft_f_min, 1.0 + 1e-6))
+        log_bins_per_oct = self._fft_n_bins / max(log_oct_total, 1e-3)
+        for i, name in enumerate(("low", "mid", "high")):
+            lo, hi = self._bands[name]
+            oct_band = math.log2(max(hi, 1e-3) / max(lo, 1e-3))
+            self._log_bins_per_band[i] = log_bins_per_oct * max(oct_band, 0.0)
+
+    def _recompute_noise_pwr(self) -> None:
+        # Per-band noise budget: nf² · n_bins_eff, where
+        #   n_bins_eff = max(1, K_lin / N_log)  — average linear bins per
+        #                                          FFT-viz log bin in the
+        #                                          band (K_avg_log), floored
+        #                                          at 1 for narrow bands
+        #                                          where log bins are smaller
+        #                                          than rfft bins.
+        # This is "one log bin's worth of floor noise" — exactly the
+        # threshold the FFT viz's per-bin gate uses. Any single log bin
+        # visible on the FFT contributes ≥ this much to integrated band
+        # power and survives. Subtracting K_lin · nf² (full broadband
+        # budget) instead would over-penalize narrowband content by ~N_log
+        # and kill snare hits that show clearly on the FFT.
+        nf2 = float(self.noise_floor) ** 2
+        scale = self._n_fft_window / max(self.sr, 1e-3)
+        # k_lin = BW · n_fft_window / sr; n_bins_eff = max(1, k_lin / N_log)
+        np.multiply(self._band_widths, scale, out=self._noise_pwr_per_band)
+        # Divide by N_log; guard against zero-width log bands.
+        np.divide(self._noise_pwr_per_band,
+                  np.maximum(self._log_bins_per_band, 1e-3),
+                  out=self._noise_pwr_per_band)
+        np.maximum(self._noise_pwr_per_band, 1.0, out=self._noise_pwr_per_band)
+        np.multiply(self._noise_pwr_per_band, nf2, out=self._noise_pwr_per_band)
 
     def set_taus(self, tau_attack_s: float, tau_release_s: float) -> None:
         dt = self.blocksize / self.sr
@@ -128,14 +257,37 @@ class AutoScaler:
     def set_noise_floor(self, floor: float) -> None:
         self.noise_floor = max(float(floor), 0.0)
         np.maximum(self._peak, max(self.noise_floor, EPS), out=self._peak)
+        self._recompute_noise_pwr()
 
     def set_tilt(self, tilt_db_per_oct: float) -> None:
         self.tilt_db_per_oct = float(tilt_db_per_oct)
         self._recompute_tilt_lin()
 
-    def set_band_centers(self, centers) -> None:
-        self._band_centers = np.asarray(centers, dtype=np.float64)
+    def set_bands(self, bands: dict) -> None:
+        self._bands = self._normalize_bands(bands)
+        self._recompute_band_geom()
         self._recompute_tilt_lin()
+        self._recompute_log_bin_geom()
+        self._recompute_per_bin_factor()
+        self._recompute_noise_pwr()
+
+    def set_n_fft_window(self, n: int) -> None:
+        self._n_fft_window = max(1, int(n))
+        self._recompute_per_bin_factor()
+        self._recompute_noise_pwr()
+
+    def set_fft_geometry(self, n_bins: int | None = None,
+                         f_min: float | None = None) -> None:
+        """Update FFT-viz log-bin geometry (n_bins, f_min). Recomputes the
+        per-band log-bin count → noise budget cap. sr changes go through
+        the construction path (hot-switch rebuilds AutoScaler), so they
+        don't need a runtime setter here."""
+        if n_bins is not None:
+            self._fft_n_bins = max(1, int(n_bins))
+        if f_min is not None:
+            self._fft_f_min = max(1e-3, float(f_min))
+        self._recompute_log_bin_geom()
+        self._recompute_noise_pwr()
 
     def set_strength(self, strength: float) -> None:
         self.strength = max(0.0, min(1.0, float(strength)))
@@ -146,8 +298,17 @@ class AutoScaler:
 
     def update(self, values_in: np.ndarray, out: np.ndarray) -> np.ndarray:
         nf = max(self.noise_floor, EPS)
+        # Bandwidth-aware noise subtraction: clean_rms = sqrt(max(0, rms² − E[noise²])).
+        # E[noise²] = noise_floor² · (BW · n_fft_window / sr) per band — i.e. one
+        # rfft bin's worth of "at-floor" noise summed over the band's linear bins.
+        # Operates on smoothed RMS (commutes with the linear smoother to leading
+        # order); applied before tilt so the tilt scales the cleaned amplitude.
+        np.multiply(values_in, values_in, out=self._v2)
+        np.subtract(self._v2, self._noise_pwr_per_band, out=self._v2)
+        np.maximum(self._v2, 0.0, out=self._v2)
+        np.sqrt(self._v2, out=self._v2)
         # Pre-tilt
-        np.multiply(values_in, self._tilt_lin, out=self._v)
+        np.multiply(self._v2, self._tilt_lin, out=self._v)
         v = self._v
 
         # Asymmetric peak follower (warm to noise_floor — don't saturate to first sample)
@@ -178,11 +339,24 @@ class AutoScaler:
             np.copyto(out, self._scaled)
             return out
 
-        # dB-mapped baseline in [0, 1]; gate-zero below noise floor.
-        # Reuse _mask (preallocated 3-bool) for the below-floor mask.
+        # Raw dB-mapped baseline (strength<1 path). Mirrors the FFT
+        # post-processor's strength<1 path so the L/M/H readout visually
+        # agrees with the FFT viz in raw mode:
+        #   • UNTILTED (uses values_in directly, not the post-tilt v).
+        #     Tilt is for the auto-scaler's normalization, not the honest
+        #     dB readout — the FFT viz also baselines from untilted
+        #     interp_db.
+        #   • Per-rfft-bin equivalent (rms_band · _per_bin_factor =
+        #     rms_band / sqrt(K_lin)). For broadband-uniform input this
+        #     equals what an FFT log bin in the band would read, so
+        #     wider bands no longer inflate by sqrt(K_lin) (~+24 dB for
+        #     the high band).
+        #   • Gate per-bin equivalent at noise_floor — same threshold the
+        #     FFT viz uses (bin amplitude < nf → 0).
         span = max(1.0, self.db_ceiling - self.db_floor)
-        np.less(v, self.noise_floor, out=self._mask)
-        np.maximum(v, EPS, out=self._raw)
+        np.multiply(values_in, self._per_bin_factor, out=self._raw)
+        np.less(self._raw, self.noise_floor, out=self._mask)
+        np.maximum(self._raw, EPS, out=self._raw)
         np.log10(self._raw, out=self._raw)
         np.multiply(self._raw, 20.0, out=self._raw)
         np.subtract(self._raw, self.db_floor, out=self._raw)

@@ -6,22 +6,26 @@ audio:
   channels: 1
 dsp:
   low:
-    lo_hz: 96.0
-    hi_hz: 200.0
+    lo_hz: 80.0
+    hi_hz: 184.0
   mid:
-    lo_hz: 320.0
-    hi_hz: 1984.0
+    lo_hz: 296.0
+    hi_hz: 1856.0
   high:
-    lo_hz: 3008.0
+    lo_hz: 3456.0
     hi_hz: 13952.0
   tau:
-    low: 0.04478187070751341
-    mid: 0.025385825194314888
-    high: 0.014696380028237662
+    low: 0.09984995066802352
+    mid: 0.060106677539281055
+    high: 0.029765877731474558
+  tau_attack:
+    low: 0.014718360806575797
+    mid: 0.004940579455869164
+    high: 0.0031420094470879134
 autoscale:
-  tau_attack_s: 0.23980228135543274
-  tau_release_s: 60.0
-  noise_floor: 0.0005735339
+  tau_attack_s: 0.2552096536028223
+  tau_release_s: 20.0
+  noise_floor: 9.632743586991868e-06
   strength: 1.0
   master_gain: 1.0
 fft:
@@ -32,7 +36,7 @@ fft:
   f_min: 30.0
   db_floor: -90.0
   db_ceiling: -10.0
-  peak_smear_oct: 0.1
+  peak_smear_oct: 0.3
   tilt_db_per_oct: 3.0
   send_raw_db: false
 osc:
@@ -47,10 +51,10 @@ ws:
   snapshot_hz: 60
   http_port: 8766
 ui:
-  peak_decay_per_s: 0.6
+  peak_decay_per_s: 0.5
   layout:
-    split_x: 0.3287296264281842
-    split_y: 0.4542996778054254
+    split_x: 0.32439231076475106
+    split_y: 0.3860607968872044
     quadrants:
     - bars
     - lines

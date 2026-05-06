@@ -370,10 +370,10 @@ label {
   font-size: 12px;
   color: var(--text-2);
 }
-label.inline { display: inline-flex; padding: 0; gap: 4px; grid-template-columns: none; column-gap: 0; }
+label.inline { display: inline-flex; padding: 0; gap: 8px; grid-template-columns: none; column-gap: 0; align-items: center; }
 label > input[type="range"] { width: 100%; }
 label > span { font-variant-numeric: tabular-nums; min-width: 48px; text-align: right; color: var(--text-2); font-size: 9.6px; }
-label.inline > span { font-size: 11px; min-width: 0; }
+label.inline > span { font-size: 11px; min-width: 0; text-transform: none; }
 
 input[type="range"] {
   -webkit-appearance: none;
@@ -397,7 +397,7 @@ input[type="range"]::-webkit-slider-thumb {
   height: 14px;
   background: linear-gradient(180deg, var(--accent-hi) 0%, var(--accent-lo) 100%);
   border-radius: 50%;
-  margin-top: -6px;
+  margin-top: -5.5px;
   cursor: pointer;
   box-shadow:
     0 0 0 1px rgba(0, 0, 0, 0.45),
@@ -422,11 +422,13 @@ input[type="range"]:disabled::-webkit-slider-thumb {
   background: linear-gradient(180deg, #5e646e 0%, #424650 100%);
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4);
 }
-input[type="range"]#peak-decay::-webkit-slider-thumb {
-  background: linear-gradient(180deg, rgba(80, 130, 240, 0.7) 0%, rgba(40, 90, 200, 0.55) 100%);
-}
+input[type="range"]#peak-decay::-webkit-slider-thumb,
 input[type="range"]#history-s::-webkit-slider-thumb {
-  background: linear-gradient(180deg, rgba(232, 168, 87, 0.7) 0%, rgba(180, 120, 50, 0.55) 100%);
+  background: rgba(40, 90, 200, 0.5);
+}
+input[type="range"]#peak-decay::-moz-range-thumb,
+input[type="range"]#history-s::-moz-range-thumb {
+  background: rgba(40, 90, 200, 0.5);
 }
 
 /* Master-gain slider: at gain ≤ 1.0 the slider keeps the default UI accent

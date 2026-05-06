@@ -38,7 +38,7 @@ TILT_REF_HZ = 1000.0
 
 class FFTPostProcessor:
     def __init__(self, n_bins: int, f_min: float, sr: float,
-                 bands: dict, tau: dict,
+                 bands: dict, tau: dict, tau_attack: dict,
                  tau_release_s: float, noise_floor: float, strength: float,
                  db_floor: float = -60.0, db_ceiling: float = 0.0,
                  hop_period_s: float = 512 / 48000.0,
@@ -51,6 +51,7 @@ class FFTPostProcessor:
         self.sr = float(sr)
         self.bands = bands
         self.tau = tau
+        self.tau_attack = tau_attack
         self.tau_release_s = float(tau_release_s)
         self.noise_floor = max(0.0, float(noise_floor))
         self.strength = max(0.0, min(1.0, float(strength)))
@@ -96,7 +97,13 @@ class FFTPostProcessor:
         self._w_right: np.ndarray | None = None
         self._left_vals: np.ndarray | None = None
         self._right_vals: np.ndarray | None = None
-        self.tau_per_bin = self._build_per_bin_tau()
+        self.tau_per_bin = self._build_per_bin_tau_for(self.tau)
+        self.tau_attack_per_bin = self._build_per_bin_tau_for(self.tau_attack)
+        # Per-bin alpha for the ASYMMETRIC signal smoother. alpha_smooth_release
+        # is selected on falling samples (slow → averages sustained content);
+        # alpha_smooth_attack is selected on rising samples (fast → onsets pass).
+        self.alpha_smooth_release = np.zeros(n, dtype=np.float64)
+        self.alpha_smooth_attack = np.zeros(n, dtype=np.float64)
         self.tilt_db = self._build_tilt_db()
         self._recompute_alphas()
         self._recompute_smear()
@@ -184,12 +191,12 @@ class FFTPostProcessor:
         bins_per_octave = self.n_bins / max(1e-6, math.log2(f_max / self.f_min))
         self._smear_sigma_bins = float(self.peak_smear_oct * bins_per_octave)
 
-    def _build_per_bin_tau(self) -> np.ndarray:
+    def _build_per_bin_tau_for(self, tau_dict: dict) -> np.ndarray:
         anchors = []
         for name in ("low", "mid", "high"):
             b = self.bands[name]
             cen = math.sqrt(float(b["lo_hz"]) * float(b["hi_hz"]))
-            anchors.append((math.log10(max(cen, 1e-3)), float(self.tau[name])))
+            anchors.append((math.log10(max(cen, 1e-3)), float(tau_dict[name])))
         anchors.sort(key=lambda x: x[0])
         log_fmin = math.log10(max(self.f_min, 1e-3))
         f_max = self.sr / 2.0
@@ -203,7 +210,22 @@ class FFTPostProcessor:
 
     def _recompute_alphas(self) -> None:
         h = self.hop_period_s
-        self.alpha_smooth = (1.0 - np.exp(-h / np.maximum(self.tau_per_bin, 1e-3))).astype(np.float64)
+        # Per-bin signal smoother: separate attack / release alphas, selected
+        # by sign(diff) per bin in the hot path.
+        np.subtract(0.0, h, out=self.alpha_smooth_release)
+        np.divide(self.alpha_smooth_release,
+                  np.maximum(self.tau_per_bin, 1e-3),
+                  out=self.alpha_smooth_release)
+        np.exp(self.alpha_smooth_release, out=self.alpha_smooth_release)
+        np.subtract(1.0, self.alpha_smooth_release, out=self.alpha_smooth_release)
+        np.subtract(0.0, h, out=self.alpha_smooth_attack)
+        np.divide(self.alpha_smooth_attack,
+                  np.maximum(self.tau_attack_per_bin, 1e-3),
+                  out=self.alpha_smooth_attack)
+        np.exp(self.alpha_smooth_attack, out=self.alpha_smooth_attack)
+        np.subtract(1.0, self.alpha_smooth_attack, out=self.alpha_smooth_attack)
+        # Peak-follower alphas (still scalar — single tau_attack_s/tau_release_s
+        # shared with the L/M/H AutoScaler).
         self.alpha_attack = 1.0 - math.exp(-h / max(self.tau_attack_s, 1e-3))
         self.alpha_release = 1.0 - math.exp(-h / max(self.tau_release_s, 1e-3))
 
@@ -215,7 +237,7 @@ class FFTPostProcessor:
             self._warmed = False
 
     def reconfigure(self, *, n_bins=None, f_min=None, sr=None,
-                    bands=None, tau=None, hop_period_s=None,
+                    bands=None, tau=None, tau_attack=None, hop_period_s=None,
                     db_floor=None, db_ceiling=None) -> None:
         with self._lock:
             if n_bins is not None: self.n_bins = int(n_bins)
@@ -223,21 +245,25 @@ class FFTPostProcessor:
             if sr is not None: self.sr = float(sr)
             if bands is not None: self.bands = bands
             if tau is not None: self.tau = tau
+            if tau_attack is not None: self.tau_attack = tau_attack
             if hop_period_s is not None: self.hop_period_s = float(hop_period_s)
             if db_floor is not None: self.db_floor = float(db_floor)
             if db_ceiling is not None: self.db_ceiling = float(db_ceiling)
             self._allocate()
 
-    def update_smoothing(self, tau: dict) -> None:
+    def update_smoothing(self, tau: dict, tau_attack: dict) -> None:
         with self._lock:
             self.tau = tau
-            self.tau_per_bin = self._build_per_bin_tau()
+            self.tau_attack = tau_attack
+            self.tau_per_bin = self._build_per_bin_tau_for(self.tau)
+            self.tau_attack_per_bin = self._build_per_bin_tau_for(self.tau_attack)
             self._recompute_alphas()
 
     def update_bands(self, bands: dict) -> None:
         with self._lock:
             self.bands = bands
-            self.tau_per_bin = self._build_per_bin_tau()
+            self.tau_per_bin = self._build_per_bin_tau_for(self.tau)
+            self.tau_attack_per_bin = self._build_per_bin_tau_for(self.tau_attack)
             self._recompute_alphas()
 
     def update_smear(self, peak_smear_oct: float) -> None:
@@ -302,7 +328,9 @@ class FFTPostProcessor:
             np.multiply(self._lin, 1.0 / 20.0, out=self._lin)
             np.power(10.0, self._lin, out=self._lin)
 
-            # 3. Per-bin EMA smoothing.
+            # 3. Per-bin ASYMMETRIC EMA smoothing — fast attack, slow release,
+            #    selected per bin by sign(diff). Same shape as the L/M/H
+            #    ExpSmoother and as the peak follower below.
             if not self._warmed:
                 np.copyto(self.smooth_lin, self._lin)
                 # Don't saturate the peak follower to the first sample —
@@ -313,7 +341,10 @@ class FFTPostProcessor:
                 self._warmed = True
             else:
                 np.subtract(self._lin, self.smooth_lin, out=self._diff)
-                np.multiply(self._diff, self.alpha_smooth, out=self._diff)
+                np.greater(self._diff, 0.0, out=self._mask)
+                np.copyto(self._alpha, self.alpha_smooth_release)
+                np.copyto(self._alpha, self.alpha_smooth_attack, where=self._mask)
+                np.multiply(self._diff, self._alpha, out=self._diff)
                 np.add(self.smooth_lin, self._diff, out=self.smooth_lin)
 
             # 4. Asymmetric peak follower (in-place, preallocated buffers).

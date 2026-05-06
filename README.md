@@ -215,9 +215,13 @@ The L/M/H pipeline (per-band IIR bandpass → RMS → smoother → auto-scaler) 
 
 - **`set_smoothing`** drives both the L/M/H exponential smoother AND the FFT per-bin smoother. The FFT bin τ is piecewise-linearly interpolated in log-frequency from the L/M/H band geometric-mean centers (so dragging the "low" τ lazes out the bass FFT bins, the "mid" τ the midrange bins, etc.).
 - **`set_autoscale`** drives both the L/M/H `AutoScaler` and the FFT per-bin peak follower (same attack/release/floor/strength).
-- **`set_band`** moves the IIR bandpass edges AND re-anchors the FFT smoothing-τ interpolation onto the new band centers.
+- **`set_band`** moves the IIR bandpass edges AND re-anchors the FFT smoothing-τ interpolation onto the new band centers AND retunes the L/M/H bandwidth-aware noise gate (see below).
 
 So the FFT visualizer is more than a spectrum — it's a continuous, high-resolution preview of what every L/M/H knob is doing. Tune until the FFT viz looks the way you want, and the L/M/H output going to OSC will follow the same response shape.
+
+**One-knob noise floor across both pipelines.** The FFT viz gates per-bin (bins below `noise_floor` go to 0). L/M/H, by contrast, integrates total power across the band — so without correction, widening a band would integrate more sub-floor noise and make L/M/H read higher even when the FFT viz looks empty in that range. To keep `noise_floor` coherent across both, the L/M/H `AutoScaler` subtracts a per-band noise budget before its gate: `clean_rms² = max(0, rms² − noise_floor² · n_bins_eff)` where `n_bins_eff = max(1, K_lin / N_log)` is the average count of linear rfft bins per FFT-viz log bin in that band — i.e. "one log bin's worth of floor noise". This is exactly the threshold the FFT viz's per-bin gate uses, so any single log bin visible on the FFT contributes ≥ this much to integrated band power and survives. (Subtracting the full `K_lin · noise_floor²` instead — the broadband-at-floor budget — would over-penalize narrowband content in wide bands by ~`N_log` and kill snare hits that show clearly on the FFT spectrum.) Tuning `noise_floor` against the FFT viz now gates the L/M/H consistently with what you see. (Recomputed automatically when bands, the noise floor, the FFT geometry — `n_bins`, `f_min`, `window_size` — or sample rate change.)
+
+**Raw mode (strength<1) reads the same dB as the FFT viz.** With `strength=0` the L/M/H output is an "honest dB readout" of the band content. To make this read the same as the FFT viz over the same frequency range, the baseline is computed two ways that mirror the FFT post-processor: it's **untilted** (the auto-scaler's spectral tilt is for normalization, not honest dB) and expressed as **per-rfft-bin equivalent amplitude** (`rms_band / sqrt(K_lin)`). The latter cancels the bandwidth integration — without it, the high band would inflate by ~+24 dB vs an FFT log bin in the same range. Result: in silence, both views agree (low-frequency room rumble shows on L *and* the low FFT bins; quiet mid/high shows zero in both). The auto-scaled path (`strength=1`, default for VJ tools) still uses tilted RMS internally — that's how the auto-scaler equalizes spectral response.
 
 The two FFT-specific knobs that don't have an L/M/H equivalent:
 
@@ -271,7 +275,7 @@ The WS server, broadcaster, and dispatcher are not started; only OSC + the audio
 | Smoothing τ (low/mid/high)| `0.15 / 0.06 / 0.02` s — drives both L/M/H and (interpolated) FFT smoother | WS `set_smoothing` or `configs/main.yaml: dsp.tau` |
 | Peak-follower attack τ    | `0.05` s       | WS `set_autoscale.tau_attack_s` or `configs/main.yaml: autoscale.tau_attack_s` |
 | Peak-follower release τ   | `60` s         | WS `set_autoscale.tau_release_s` or `configs/main.yaml: autoscale.tau_release_s` |
-| Noise floor               | `0.001` linear RMS (~−60 dBFS) — applied to L/M/H AND FFT (calibrated)  | WS `set_autoscale.noise_floor` |
+| Noise floor               | `0.001` linear RMS (~−60 dBFS) — gates FFT per-bin AND L/M/H per-band (bandwidth-aware: subtracts `noise_floor² · max(1, K_lin/N_log)` from band RMS² — "one FFT-viz log bin's worth of floor noise" — so anything visible on the FFT survives the L/M/H gate) | WS `set_autoscale.noise_floor` |
 | Autoscale strength        | `1.0`          | WS `set_autoscale.strength` (0 = pass-through raw, 1 = fully scaled) |
 | WS snapshot rate          | `60` Hz        | WS `set_ws_snapshot_hz` or `configs/main.yaml: ws.snapshot_hz` |
 

@@ -41,7 +41,13 @@ class DspCfg:
     low: BandCfg = field(default_factory=lambda: BandCfg(30.0, 250.0))
     mid: BandCfg = field(default_factory=lambda: BandCfg(250.0, 4000.0))
     high: BandCfg = field(default_factory=lambda: BandCfg(4000.0, 16000.0))
+    # Asymmetric per-band envelope follower. `tau` is the RELEASE time constant
+    # (slow, smooths sustained content); `tau_attack` is the ATTACK time constant
+    # (fast, lets transients through). Defaults give a percussion-friendly shape:
+    # ~5-15 ms attack catches kick/snare/hat onsets cleanly, while the release
+    # taus average out the harmonic flutter on sustained material.
     tau: dict = field(default_factory=lambda: {"low": 0.15, "mid": 0.06, "high": 0.02})
+    tau_attack: dict = field(default_factory=lambda: {"low": 0.015, "mid": 0.005, "high": 0.003})
 
 
 @dataclass
@@ -213,6 +219,11 @@ def load_config(path: Path | str) -> Config:
             cfg.dsp.tau = {**cfg.dsp.tau, **V.validate_tau(d_raw["tau"])}
     except Exception as e:
         log.warning("config dsp.tau invalid (%s); using defaults", e)
+    try:
+        if "tau_attack" in d_raw:
+            cfg.dsp.tau_attack = {**cfg.dsp.tau_attack, **V.validate_tau(d_raw["tau_attack"])}
+    except Exception as e:
+        log.warning("config dsp.tau_attack invalid (%s); using defaults", e)
 
     # autoscale
     as_raw = raw.get("autoscale", {}) or {}

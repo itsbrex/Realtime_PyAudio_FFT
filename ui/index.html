@@ -85,84 +85,131 @@ Bands may overlap."></div>
 
         <fieldset>
           <legend>Auto-scaler</legend>
-          <label title="**Master gain.** Final output gain applied to L/M/H and processed FFT after the full post-processing pipeline.
+          <label title="**Master gain.** Final multiplier on everything that goes out (L/M/H + FFT, both OSC and WebSocket).
 
-Multiplies whatever is sent over OSC and WebSocket.
+- `1.0` (centered) — the post-processing pipeline's natural output
+- `< 1.0` — attenuate
+- `> 1.0` — push above the conventional `[0, 1]` range. Downstream consumers must accept this; UI bars cosmetically clamp at `1.0` but the wire payload is unclamped. The track tints orange→red as a warning.">master gain <input type="range" id="autoscale-master" min="50" max="150" step="1" /> <span id="autoscale-master-val"></span></label>
+          <label title="**Strength.** Blend between *equalized* output (everything looks similar in level) and *honest* output (raw dB / RMS readout).
 
-- Range: `0.5–1.5` (centered at `1.0`)
-- Values `> 1.0` push outputs above 1.0 — downstream consumers must accept this
-
-*UI visualizers cosmetically clamp at 1.0 for rendering, but the OSC / WS payload is unclamped. Track and dot tint orange / red as the gain rises past 1.0 to flag the overflow visually.*">master gain <input type="range" id="autoscale-master" min="50" max="150" step="1" /> <span id="autoscale-master-val"></span></label>
-          <label title="**Strength.** Blend between auto-scaled and raw output.
-
-- `100%` → full per-bin / per-band peak normalization
-- `0%` → honest dB readout for the FFT, raw RMS for L/M/H
+- `100%` → full per-bin / per-band auto-normalization. Quiet content looks as prominent as loud content. Best for visualizers and reactive features that should always look 'alive'.
+- `0%` → unprocessed readout. The FFT shows true level differences across frequency; L/M/H reflects raw band energy.
+- In-between → partial equalization.
 
 Drives both the L/M/H output and the FFT visualizer.">strength <input type="range" id="autoscale-strength" min="0" max="100" step="1" /> <span id="autoscale-strength-val"></span></label>
-          <label title="**Soft noise gate.** Signals below this RMS are treated as silence — the auto-scaler won't try to amplify them.
+          <label title="**Noise gate.** Anything below this RMS is treated as silence — the auto-scaler won't try to amplify it.
 
-- Shown in `dBFS`
+Without a gate, the auto-scaler would happily normalize background hiss up to full scale during quiet passages.
+
+- Shown in `dBFS` (digital full-scale reference)
 - Applied to both L/M/H and FFT bins
+- Bins below the floor pin to the chart bottom (no disappearing bars)">noise gate <input type="range" id="autoscale-floor" min="0" max="1000" step="1" /> <span id="autoscale-floor-val"></span></label>
+          <label title="**Spectral tilt.** Tilts the gate and peak follower across frequency: `+N dB/oct` above 1 kHz, `−N dB/oct` below.
 
-Bins below the floor stay pinned at the chart bottom (no disappearing bars).">noise gate <input type="range" id="autoscale-floor" min="0" max="1000" step="1" /> <span id="autoscale-floor-val"></span></label>
-          <label title="**Spectral tilt** that rebalances the noise gate across frequency: `+N dB / oct` above 1 kHz, `−N dB / oct` below.
-
-- **FFT side**: shifts the wire dB before the gate / peak follower.
-- **L/M/H side**: derives a per-band noise floor from each band's geometric center — so the same global gate fires uniformly across frequency on both pipelines.
+Most music has far more energy in the lows than the highs (the `1/f` / pink-noise shape). Without tilt, bass dominates and the high end sits permanently below the gate. Tilting brings them back to parity.
 
 Typical values:
 
-- `0` → flat (honest dB / single global gate)
-- `~3` → pink-noise compensation (typical music feels balanced)
-- higher → more high-end through the gate">tilt (dB/oct) <input type="range" id="fft-tilt" min="-25" max="50" step="1" /> <span id="fft-tilt-val"></span></label>
+- `0` → flat, honest dB / single global gate
+- `~3` → pink-noise compensation. Most music feels balanced across the spectrum.
+- higher → push more high-end through the gate
+
+Affects both pipelines: shifts the wire dB on the FFT side; derives a per-band noise floor from each band's geometric center on the L/M/H side, so the same global gate fires uniformly across frequency.">tilt (dB/oct) <input type="range" id="fft-tilt" min="-25" max="50" step="1" /> <span id="fft-tilt-val"></span></label>
+          <label title="**FFT-only.** Spatial smear of the per-bin peak follower (Gaussian, width in **octaves** of frequency).
+
+Without smear, a sustained pure tone (a single bin holding a high value) normalizes *itself* down to nothing — it becomes its own peak and divides itself out, ending up looking smaller than its quiet neighbors.
+
+Smearing the peak across nearby bins fixes this: the tone now competes against its spectral surroundings instead of just itself, so it reads as a real spike against the spectrum.
+
+- `0` → each bin self-normalizes; sustained tones vanish
+- `~0.3 oct` (default) → tones survive while broadband shape is still equalized
+- Higher → more local frequency contour preserved, less global flattening
+
+*L/M/H has no spectral context, so this only affects the FFT.*">smear (oct) <input type="range" id="fft-peak-smear" min="0" max="200" step="1" /> <span id="fft-peak-smear-val"></span></label>
         </fieldset>
 
         <fieldset>
-          <legend>Peak follower</legend>
-          <label title="**Attack time** of the asymmetric peak follower.
+          <legend title="**Peak follower — the auto-rescaling engine.**
 
-How fast the tracked peak follows a **rising** signal.
+The peak follower is what makes the visualization **adapt to changing input levels**. It tracks the loudest recent value (per band, and per FFT bin) and the auto-scaler divides the live signal by that running peak. So when a track gets quieter, the tracked peak decays and the output rescales back up — quiet passages stay visible.
 
-- Smaller → snappier transients
-- Larger → damped
+Two time constants control its behavior:
+
+- **Attack** — how fast a *new* peak gets registered (rising-edge response)
+- **Release** — how long peaks are held before the tracker forgets them (the rolling memory)
+
+Drives both the L/M/H auto-scaler and the FFT per-bin peak follower.">Peak follower</legend>
+          <label title="**Attack time.** How fast the peak follower locks onto a *rising* signal.
+
+This sets how quickly the auto-rescaler reacts when the input gets suddenly louder.
+
+- Smaller (`5–20 ms`) → snappy. Transients lock in immediately; the auto-scale catches up to a sudden loud passage almost instantly.
+- Larger → damped. New peaks are absorbed gradually, less reactive to sudden level changes.
 
 Drives both the L/M/H auto-scaler and the FFT per-bin peak follower.">attack (ms) <input type="range" id="autoscale-attack" min="1" max="500" step="1" data-log="1" /> <span id="autoscale-attack-val"></span></label>
-          <label title="**Release time** of the asymmetric peak follower (the &quot;rolling window&quot;).
+          <label title="**Release time.** How long peaks are held before the auto-scaler 'forgets' them — the **rolling memory** of the auto-rescaler.
 
-How long loud peaks are held before the tracked peak decays.
+The tracked peak decays over this time constant. Once it has decayed below the current signal, the new value becomes the peak.
 
-- Longer → quieter passages stay visible
+- Longer (`60–300 s`) → stable view across long passages. A loud chorus won't make the following quiet verse vanish.
+- Shorter (`10–30 s`) → faster adaptation. The visualizer constantly rescales to whatever is loud right now (more dynamic, but compresses the contrast between loud and quiet sections).
 - Snaps to multiples of `10 s`
 
 Drives both the L/M/H auto-scaler and the FFT per-bin peak follower.">release (s) <input type="range" id="autoscale-tau" min="10" max="300" step="1" data-log="1" /> <span id="autoscale-tau-val"></span></label>
-          <label title="**FFT-only.** Spatial smear applied to the per-bin peak follower (Gaussian, in **octaves** of frequency, reflect-padded edges).
-
-- `0` → each bin self-normalizes; single-tone bins over-attenuate themselves and read smaller than their neighbors.
-- Higher → peaks are shared with neighboring bins, so a single-frequency spike still reads as taller than its spectral context.
-
-*The L/M/H peak follower has no spectral context, so this knob doesn't affect it.*">smear (oct) <input type="range" id="fft-peak-smear" min="0" max="200" step="1" /> <span id="fft-peak-smear-val"></span></label>
         </fieldset>
 
         <fieldset>
-          <legend>Smoothing tau (ms)</legend>
-          <label title="**LOW band smoother time constant.**
+          <legend title="**Smoothing — release side.**
 
-- Larger → lazier / smoother
-- Smaller → snappier
+How fast the smoothed value *decays* after a peak. This is the dominant source of trailing latency in the L/M/H feature stream and FFT bins.
 
-Also drives FFT-bin smoothing for the visualizer (interpolated across the spectrum from the L/M/H band centers).">low <input type="range" id="tau-low"  min="5" max="2000" step="1" data-log="1" /> <span id="tau-low-val"></span></label>
-          <label title="**MID band smoother time constant.**
+What this means in audio terms:
 
-- Larger → lazier / smoother
-- Smaller → snappier
+- **Larger** → output looks smoother, more 'flowing'. Harmonic flutter inside a held note is averaged out. Good for ambient features and mood-style visualizers.
+- **Smaller** → output is twitchier, follows individual cycles more closely. Good for percussive / rhythmic features where you want energy to drop fast between hits so each hit reads as distinct.
 
-Also drives FFT-bin smoothing for the visualizer (interpolated across the spectrum from the L/M/H band centers).">mid <input type="range" id="tau-mid"  min="5" max="2000" step="1" data-log="1" /> <span id="tau-mid-val"></span></label>
-          <label title="**HIGH band smoother time constant.**
+The matching attack-τ knobs below control how fast onsets pass through. Setting **release ≫ attack** is the classic percussion shape: fast hit, slow tail.
 
-- Larger → lazier / smoother
-- Smaller → snappier
+Per-band τ also drives the FFT-bin smoother (log-interpolated from the L/M/H band centers).">Smoothing release τ (ms)</legend>
+          <label title="**LOW band release.**
 
-Also drives FFT-bin smoothing for the visualizer (interpolated across the spectrum from the L/M/H band centers).">high <input type="range" id="tau-high" min="5" max="2000" step="1" data-log="1" /> <span id="tau-high-val"></span></label>
+Larger → smooths sustained bass; kick body and bass notes blur into a flowing envelope. Smaller → each kick decays sharply, distinct hits stay separated.
+
+Falling-edge τ only — onsets are governed by the attack-τ slider below.">low <input type="range" id="tau-low"  min="5" max="2000" step="1" data-log="1" /> <span id="tau-low-val"></span></label>
+          <label title="**MID band release.**
+
+Larger → smooths sustained voice and snare body into a held envelope. Smaller → consonants and snare hits decay quickly, transients stay punchy.
+
+Falling-edge τ only — onsets are governed by the attack-τ slider below.">mid <input type="range" id="tau-mid"  min="5" max="2000" step="1" data-log="1" /> <span id="tau-mid-val"></span></label>
+          <label title="**HIGH band release.**
+
+Larger → hat / cymbal sizzle averages into a continuous shimmer. Smaller → each cymbal strike fades fast, individual hi-hat hits remain crisp.
+
+Falling-edge τ only — onsets are governed by the attack-τ slider below.">high <input type="range" id="tau-high" min="5" max="2000" step="1" data-log="1" /> <span id="tau-high-val"></span></label>
+        </fieldset>
+
+        <fieldset>
+          <legend title="**Smoothing — attack side.**
+
+How fast the smoothed value *responds to a rising signal*. This determines how sharply transients (kicks, snares, hi-hats, vocal consonants) register in the feature stream.
+
+What this means in audio terms:
+
+- **Smaller** (`1–10 ms`) → onsets pass through almost instantly. Kicks and snares read as sharp spikes; the feature locks onto **the beat**. Best for rhythmic / beat-reactive visualizers.
+- **Larger** (`50+ ms`) → onsets get smoothed; output behaves more like a symmetric averager. Better for a 'loudness contour' feel, worse for rhythmic sync.
+
+Setting **attack ≪ release** is what makes the feature track the beat rather than the harmonic flutter inside held notes.
+
+Per-band τ also drives the FFT-bin smoother (log-interpolated from the L/M/H band centers).">Smoothing attack τ (ms)</legend>
+          <label title="**LOW band attack.**
+
+Catches the rising edge of kick / sub events. `~10–20 ms` is a sweet spot — long enough to ignore pre-ringing, short enough to read as 'on the beat'.">low <input type="range" id="tau-attack-low"  min="1" max="200" step="1" data-log="1" /> <span id="tau-attack-low-val"></span></label>
+          <label title="**MID band attack.**
+
+Catches snare snap and vocal consonants. `~3–5 ms` is typical — fast enough that each hit registers as a distinct percussive event.">mid <input type="range" id="tau-attack-mid"  min="1" max="200" step="1" data-log="1" /> <span id="tau-attack-mid-val"></span></label>
+          <label title="**HIGH band attack.**
+
+Catches hat / cymbal / sibilance onsets. `~3 ms or less` — these events are short and need to register sharply or they'll get blurred into the surrounding sizzle.">high <input type="range" id="tau-attack-high" min="1" max="200" step="1" data-log="1" /> <span id="tau-attack-high-val"></span></label>
         </fieldset>
 
         <fieldset>

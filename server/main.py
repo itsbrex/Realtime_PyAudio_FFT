@@ -110,18 +110,6 @@ class App:
             "high": (d.high.lo_hz, d.high.hi_hz),
         }
 
-    def _band_centers(self) -> tuple:
-        """Geometric-mean center of each L/M/H band (Hz). Used by AutoScaler
-        to evaluate the per-band linear pre-tilt gain.
-        """
-        import math as _math
-        d = self.cfg.dsp
-        return (
-            _math.sqrt(d.low.lo_hz  * d.low.hi_hz),
-            _math.sqrt(d.mid.lo_hz  * d.mid.hi_hz),
-            _math.sqrt(d.high.lo_hz * d.high.hi_hz),
-        )
-
     def _build_pipeline_for_sr(self, sr: float) -> None:
         cfg = self.cfg
         self.filter_bank = FilterBank(
@@ -129,7 +117,8 @@ class App:
             bands=self._bands_tuple_dict(),
             blocksize=cfg.audio.blocksize,
         )
-        self.smoother = ExpSmoother(sr=sr, blocksize=cfg.audio.blocksize, tau=cfg.dsp.tau)
+        self.smoother = ExpSmoother(sr=sr, blocksize=cfg.audio.blocksize,
+                                    tau=cfg.dsp.tau, tau_attack=cfg.dsp.tau_attack)
         self.auto_scaler = AutoScaler(
             sr=sr,
             blocksize=cfg.audio.blocksize,
@@ -138,7 +127,10 @@ class App:
             noise_floor=cfg.autoscale.noise_floor,
             strength=cfg.autoscale.strength,
             tilt_db_per_oct=cfg.fft.tilt_db_per_oct,
-            band_centers=self._band_centers(),
+            bands=self._bands_tuple_dict(),
+            n_fft_window=cfg.fft.window_size,
+            fft_n_bins=cfg.fft.n_bins,
+            fft_f_min=cfg.fft.f_min,
             db_floor=cfg.fft.db_floor,
             db_ceiling=cfg.fft.db_ceiling,
         )
@@ -213,6 +205,7 @@ class App:
                 "high": {"lo_hz": cfg.dsp.high.lo_hz, "hi_hz": cfg.dsp.high.hi_hz},
             },
             tau=dict(cfg.dsp.tau),
+            tau_attack=dict(cfg.dsp.tau_attack),
             tau_release_s=cfg.autoscale.tau_release_s,
             noise_floor=cfg.autoscale.noise_floor,
             strength=cfg.autoscale.strength,
@@ -350,6 +343,7 @@ class App:
             "fft_peak_smear_oct": cfg.fft.peak_smear_oct,
             "fft_tilt_db_per_oct": cfg.fft.tilt_db_per_oct,
             "tau": dict(cfg.dsp.tau),
+            "tau_attack": dict(cfg.dsp.tau_attack),
             "autoscale": {
                 "tau_attack_s": cfg.autoscale.tau_attack_s,
                 "tau_release_s": cfg.autoscale.tau_release_s,
@@ -512,6 +506,7 @@ class App:
                 sr=new_sr,
                 blocksize=self.cfg.audio.blocksize,
                 tau=self.cfg.dsp.tau,
+                tau_attack=self.cfg.dsp.tau_attack,
             )
             self.auto_scaler = AutoScaler(
                 sr=new_sr,
@@ -521,7 +516,10 @@ class App:
                 noise_floor=self.cfg.autoscale.noise_floor,
                 strength=self.cfg.autoscale.strength,
                 tilt_db_per_oct=self.cfg.fft.tilt_db_per_oct,
-                band_centers=self._band_centers(),
+                bands=self._bands_tuple_dict(),
+                n_fft_window=self.cfg.fft.window_size,
+                fft_n_bins=self.cfg.fft.n_bins,
+                fft_f_min=self.cfg.fft.f_min,
                 db_floor=self.cfg.fft.db_floor,
                 db_ceiling=self.cfg.fft.db_ceiling,
             )
