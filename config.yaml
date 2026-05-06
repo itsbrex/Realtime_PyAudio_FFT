@@ -20,7 +20,7 @@ dsp:
     high: 0.014696380028237662
 autoscale:
   tau_attack_s: 0.23980228135543274
-  tau_release_s: 120.0
+  tau_release_s: 60.0
   noise_floor: 0.0005639751999999999
   strength: 1.0
 fft:
