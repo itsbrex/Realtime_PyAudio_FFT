@@ -51,7 +51,8 @@ class WSServer:
 
     def __init__(self, host: str, port: int, snapshot_hz: int,
                  features_store, fft_store, get_meta, get_devices, get_presets,
-                 get_server_status, get_fft_enabled, dispatcher_handle,
+                 get_server_status, get_fft_enabled, get_fft_send_raw_db,
+                 dispatcher_handle,
                  perf_ring: np.ndarray | None = None):
         self.host = host
         self.port = port
@@ -63,6 +64,7 @@ class WSServer:
         self.get_presets = get_presets
         self.get_server_status = get_server_status
         self.get_fft_enabled = get_fft_enabled
+        self.get_fft_send_raw_db = get_fft_send_raw_db
         self.dispatcher_handle = dispatcher_handle
         self.clients: set[_Client] = set()
         self._server = None
@@ -209,9 +211,11 @@ class WSServer:
                 text = json.dumps(msg)
                 for c in list(self.clients):
                     c.outbound.put_nowait_drop_oldest(text)
-            # FFT
+            # FFT — pick raw vs processed stream based on the user-facing flag
+            # so what the UI renders is byte-identical to what OSC sends.
             if self.get_fft_enabled():
-                fseq, frame = self.fft_store.read()
+                kind = "raw_db" if self.get_fft_send_raw_db() else "processed"
+                fseq, frame = self.fft_store.read(kind)
                 if fseq != last_fft_seq and frame is not None:
                     last_fft_seq = fseq
                     payload = encode_fft_binary(frame)

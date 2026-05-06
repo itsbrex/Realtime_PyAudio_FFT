@@ -46,6 +46,7 @@ class DspCfg:
 
 @dataclass
 class AutoscaleCfg:
+    tau_attack_s: float = 0.05
     tau_release_s: float = 60.0
     noise_floor: float = 0.001
     strength: float = 1.0
@@ -60,6 +61,16 @@ class FftCfg:
     f_min: float = 30.0
     db_floor: float = -60.0
     db_ceiling: float = 0.0
+    # Spatial-smear width (in octaves) applied to the per-bin peak follower
+    # before the auto-scaler divides by it. 0 = each bin self-normalizes
+    # independently (single-tone bins can over-attenuate themselves). Larger
+    # values share normalization across neighboring bins so a single-frequency
+    # spike still reads as taller-than-average against its spectral context.
+    peak_smear_oct: float = 0.3
+    # When True, OSC + WS send the raw wire dB stream. When False (default),
+    # they send the post-processed stream (smoothed, peak-normalized, gated,
+    # tanh-compressed, strength-blended) — same semantics as L/M/H over OSC.
+    send_raw_db: bool = False
 
 
 @dataclass
@@ -175,6 +186,7 @@ def load_config(path: Path | str) -> Config:
     as_raw = raw.get("autoscale", {}) or {}
     try:
         ok = V.validate_autoscale(
+            tau_attack_s=as_raw.get("tau_attack_s"),
             tau_release_s=as_raw.get("tau_release_s"),
             noise_floor=as_raw.get("noise_floor"),
             strength=as_raw.get("strength"),
@@ -203,6 +215,12 @@ def load_config(path: Path | str) -> Config:
         cfg.fft.db_floor = float(f_raw["db_floor"])
     if isinstance(f_raw.get("db_ceiling"), (int, float)):
         cfg.fft.db_ceiling = float(f_raw["db_ceiling"])
+    if isinstance(f_raw.get("peak_smear_oct"), (int, float)):
+        v = float(f_raw["peak_smear_oct"])
+        if 0.0 <= v <= 3.0:
+            cfg.fft.peak_smear_oct = v
+    if isinstance(f_raw.get("send_raw_db"), bool):
+        cfg.fft.send_raw_db = f_raw["send_raw_db"]
 
     # osc
     o_raw = raw.get("osc", {}) or {}

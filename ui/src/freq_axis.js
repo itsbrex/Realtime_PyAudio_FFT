@@ -105,24 +105,32 @@ export function makeFreqAxis(container, getSr) {
       y: TRACK_Y, height: TRACK_H,
       fill: c.fill, stroke: c.stroke, "stroke-width": 1,
     });
-    rect.style.cursor = "grab";
+    rect.style.cursor = "pointer";
+    rect.dataset.band = name;
+    rect.dataset.role = "body";
     const handleLo = el("rect", {
       y: TRACK_Y, height: TRACK_H, width: HANDLE_W,
       fill: c.handle, opacity: 0.85,
     });
     handleLo.style.cursor = "ew-resize";
+    handleLo.dataset.band = name;
+    handleLo.dataset.role = "lo";
     const handleHi = el("rect", {
       y: TRACK_Y, height: TRACK_H, width: HANDLE_W,
       fill: c.handle, opacity: 0.85,
     });
     handleHi.style.cursor = "ew-resize";
+    handleHi.dataset.band = name;
+    handleHi.dataset.role = "hi";
     const labLo = el("text", {
       y: LABEL_Y[name], "font-size": 10, "text-anchor": "middle",
       fill: "#d6d9dc", "font-variant-numeric": "tabular-nums",
+      "pointer-events": "none",
     });
     const labHi = el("text", {
       y: LABEL_Y[name], "font-size": 10, "text-anchor": "middle",
       fill: "#d6d9dc", "font-variant-numeric": "tabular-nums",
+      "pointer-events": "none",
     });
     svg.appendChild(rect);
     svg.appendChild(handleLo);
@@ -141,6 +149,29 @@ export function makeFreqAxis(container, getSr) {
     high: { lo_hz: 4000, hi_hz: 16000 },
   };
 
+  // null = no band selected; only the selected band's edges/body are draggable.
+  let selected = null;
+
+  function applySelectionStyles() {
+    for (const name of ORDER) {
+      const b = bands[name];
+      const isSel = name === selected;
+      b.rect.style.opacity = isSel ? "1" : "0.45";
+      b.rect.setAttribute("stroke-width", isSel ? 2 : 1);
+      b.rect.style.cursor = isSel ? "grab" : "pointer";
+      b.handleLo.style.display = isSel ? "" : "none";
+      b.handleHi.style.display = isSel ? "" : "none";
+      b.labLo.style.display = isSel ? "" : "none";
+      b.labHi.style.display = isSel ? "" : "none";
+    }
+  }
+
+  function setSelected(name) {
+    if (selected === name) return;
+    selected = name;
+    applySelectionStyles();
+  }
+
   function render() {
     for (const name of ORDER) {
       const b = bands[name];
@@ -158,6 +189,7 @@ export function makeFreqAxis(container, getSr) {
     }
   }
   render();
+  applySelectionStyles();
 
   function fmaxHard() {
     const sr = getSr() || 48000;
@@ -191,6 +223,24 @@ export function makeFreqAxis(container, getSr) {
     };
     if (mode === "body") bands[name].rect.style.cursor = "grabbing";
     try { svg.setPointerCapture(evt.pointerId); } catch (e) {}
+  }
+
+  function onBandPointerDown(name, role, evt) {
+    if (role === "body") {
+      // First click on an unselected band only selects it; a second drag
+      // gesture is needed to actually shift the band.
+      if (selected !== name) {
+        setSelected(name);
+        evt.preventDefault();
+        return;
+      }
+      startDrag(name, "body", evt);
+    } else {
+      // Edge handles only react when the owning band is selected; otherwise
+      // they're hidden via display:none and unhittable.
+      if (selected !== name) return;
+      startDrag(name, role, evt);
+    }
   }
 
   function onMove(evt) {
@@ -236,13 +286,30 @@ export function makeFreqAxis(container, getSr) {
 
   for (const name of ORDER) {
     const b = bands[name];
-    b.rect.addEventListener("pointerdown",     (e) => startDrag(name, "body", e));
-    b.handleLo.addEventListener("pointerdown", (e) => startDrag(name, "lo",   e));
-    b.handleHi.addEventListener("pointerdown", (e) => startDrag(name, "hi",   e));
+    b.rect.addEventListener("pointerdown",     (e) => onBandPointerDown(name, "body", e));
+    b.handleLo.addEventListener("pointerdown", (e) => onBandPointerDown(name, "lo",   e));
+    b.handleHi.addEventListener("pointerdown", (e) => onBandPointerDown(name, "hi",   e));
   }
+
+  // Clicks on the SVG outside any band → deselect. Per-band handlers run
+  // first (target phase); this bubble-phase listener fires afterwards and
+  // skips when the target carries a band tag.
+  svg.addEventListener("pointerdown", (evt) => {
+    const t = evt.target;
+    if (t && t.dataset && t.dataset.band) return;
+    setSelected(null);
+  });
+
   svg.addEventListener("pointermove",   onMove);
   svg.addEventListener("pointerup",     endDrag);
   svg.addEventListener("pointercancel", endDrag);
+
+  // Clicks anywhere else on the page → deselect.
+  document.addEventListener("pointerdown", (evt) => {
+    if (selected === null) return;
+    if (svg.contains(evt.target)) return;
+    setSelected(null);
+  });
 
   return {
     /** Push server-confirmed band values into the widget. Ignored mid-drag

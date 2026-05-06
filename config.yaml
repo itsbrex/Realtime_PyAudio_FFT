@@ -6,21 +6,22 @@ audio:
   channels: 1
 dsp:
   low:
-    lo_hz: 72.0
-    hi_hz: 232.0
+    lo_hz: 96.0
+    hi_hz: 248.0
   mid:
     lo_hz: 312.0
     hi_hz: 1920.0
   high:
-    lo_hz: 3264.0
-    hi_hz: 13184.0
+    lo_hz: 3136.0
+    hi_hz: 12800.0
   tau:
     low: 0.04007222664388595
     mid: 0.025309699827756167
     high: 0.014696380028237662
 autoscale:
+  tau_attack_s: 0.24893134348310877
   tau_release_s: 120.0
-  noise_floor: 0.0003307949
+  noise_floor: 0.0
   strength: 1.0
 fft:
   enabled: true
@@ -30,6 +31,8 @@ fft:
   f_min: 30.0
   db_floor: -60.0
   db_ceiling: 0.0
+  peak_smear_oct: 0.3
+  send_raw_db: false
 osc:
   destinations:
   - host: 127.0.0.1

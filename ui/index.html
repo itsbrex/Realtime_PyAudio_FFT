@@ -31,7 +31,7 @@
           <canvas id="viz-scene" width="640" height="200"></canvas>
         </div>
         <div class="viz-card">
-          <div class="viz-title">FFT (log-x, dB) <label class="inline" title="Enable / disable the FFT worker. Disabling saves CPU when you only need L/M/H."><input type="checkbox" id="fft-toggle" /> enable</label> <label class="inline" title="Bypass FFT post-processing and show the wire-format dB log spectrum (sentinels render as gaps, fixed db_floor/db_ceiling, no smoothing/equalization). Default OFF — by default the viz uses the same Smoothing tau and Auto-scaler settings as the L/M/H pipeline so what you see mirrors the OSC output."><input type="checkbox" id="fft-raw-db" /> raw dB</label></div>
+          <div class="viz-title">FFT (log-x, dB) <label class="inline" title="Enable / disable the FFT worker. Disabling saves CPU when you only need L/M/H."><input type="checkbox" id="fft-toggle" /> enable</label> <label class="inline" title="What you see in this graph IS what's sent over OSC on /audio/fft. OFF (default): server runs the same per-bin pipeline as L/M/H (smoother → asymmetric peak follower → soft gate → tanh → strength blend) and sends [0..1] post-processed values. ON: server sends the raw wire dB log spectrum (sentinels rendered as gaps). The server is authoritative — toggling sends set_fft_send_raw_db; the OSC payload switches in lockstep with the visualization."><input type="checkbox" id="fft-raw-db" /> raw dB</label></div>
           <canvas id="viz-fft" width="640" height="200"></canvas>
         </div>
       </section>
@@ -40,19 +40,20 @@
         <fieldset>
           <legend>Input device</legend>
           <select id="device-select"></select>
-          <button id="device-refresh">refresh</button>
-          <button id="device-probe">probe</button>
+          <button id="device-refresh" title="Re-enumerate input devices via PortAudio (cheap, instant). Use after plugging/unplugging a device.">refresh</button>
+          <button id="device-probe" title="Re-enumerate AND briefly open every input (~200 ms each) to detect which ones are currently producing signal. Devices that saw audio during the probe get a ★. Slower and momentarily grabs each device — use sparingly.">probe</button>
         </fieldset>
 
         <fieldset>
           <legend>Bandpass edges</legend>
-          <div id="freq-axis" title="Drag a colored region to shift it; drag its left/right handle to move just that edge. Bands may overlap."></div>
-          <label title="LOW bandpass — bottom edge. Set above the noise/rumble floor (e.g. 30 Hz) to keep DC and sub-bass rumble out of the LOW output.">low.lo <input type="range" id="low-lo"  min="20"   max="500"   step="1" data-log="1" /> <span id="low-lo-val"></span></label>
-          <label title="LOW bandpass — top edge. Boundary above which LOW energy rolls off.">low.hi <input type="range" id="low-hi"  min="50"   max="2000"  step="1" data-log="1" /> <span id="low-hi-val"></span></label>
-          <label title="MID bandpass — bottom edge.">mid.lo <input type="range" id="mid-lo"  min="100"  max="4000"  step="1" data-log="1" /> <span id="mid-lo-val"></span></label>
-          <label title="MID bandpass — top edge.">mid.hi <input type="range" id="mid-hi"  min="500"  max="8000"  step="1" data-log="1" /> <span id="mid-hi-val"></span></label>
-          <label title="HIGH bandpass — bottom edge.">high.lo <input type="range" id="high-lo" min="1000" max="12000" step="1" data-log="1" /> <span id="high-lo-val"></span></label>
-          <label title="HIGH bandpass — top edge. Cap the air/sibilance region; many consumer mics roll off above ~16 kHz.">high.hi <input type="range" id="high-hi" min="2000" max="22000" step="1" data-log="1" /> <span id="high-hi-val"></span></label>
+          <div id="freq-axis" title="Click a colored band to select it. Once selected, drag its body to shift the whole band, or drag its left/right handle to move just that edge. Click outside any band to deselect. Bands may overlap."></div>
+        </fieldset>
+
+        <fieldset>
+          <legend>Peak follower (attack / release)</legend>
+          <label title="ATTACK time of the asymmetric peak follower. How fast the tracked peak follows a RISING signal. Smaller = snappier transients, larger = damped. Drives both the L/M/H auto-scaler and the FFT per-bin peak follower.">attack (ms) <input type="range" id="autoscale-attack" min="1" max="500" step="1" data-log="1" /> <span id="autoscale-attack-val"></span></label>
+          <label title="RELEASE time of the asymmetric peak follower (the 'rolling window'). How long loud peaks are held before the tracked peak decays. Longer = quieter passages stay visible. Snaps to multiples of 10 s. Drives both the L/M/H auto-scaler and the FFT per-bin peak follower.">release (s) <input type="range" id="autoscale-tau" min="10" max="300" step="1" data-log="1" /> <span id="autoscale-tau-val"></span></label>
+          <label title="FFT-only. Spatial smear applied to the per-bin peak follower (Gaussian, in octaves of frequency, reflect-padded edges). 0 = each bin self-normalizes — single-tone bins over-attenuate themselves and read smaller than their neighbors. Higher = peaks are shared with neighboring bins so a single-frequency spike still reads as taller than its spectral context. The L/M/H peak follower has no spectral context, so this knob doesn't affect it.">smear (oct) <input type="range" id="fft-peak-smear" min="0" max="200" step="1" /> <span id="fft-peak-smear-val"></span></label>
         </fieldset>
 
         <fieldset>
@@ -64,20 +65,13 @@
 
         <fieldset>
           <legend>Auto-scaler</legend>
-          <label title="Release time of the rolling peak follower. Longer windows hold loud peaks longer, so quieter passages stay visible. Snaps to multiples of 10 s. Drives both the L/M/H auto-scaler AND the FFT visualizer's per-bin peak follower.">window (s) <input type="range" id="autoscale-tau" min="10" max="300" step="1" data-log="1" /> <span id="autoscale-tau-val"></span></label>
           <label title="Soft noise gate: signals below this RMS are treated as silence (the auto-scaler won't try to amplify them). Shown in dBFS. Applied to both L/M/H and FFT bins. Bins below the floor stay pinned at the chart bottom (no disappearing bars).">noise gate <input type="range" id="autoscale-floor" min="0" max="1000" step="1" /> <span id="autoscale-floor-val"></span></label>
           <label title="Blend between auto-scaled (1.0) and raw (0.0) output. 100% = full per-bin/per-band peak normalization; 0% = honest dB readout for the FFT and raw RMS for L/M/H. Drives both the L/M/H output AND the FFT visualizer.">strength <input type="range" id="autoscale-strength" min="0" max="100" step="1" /> <span id="autoscale-strength-val"></span></label>
-          <div class="raw-strip" title="Raw per-band RMS (pre auto-scaler). Useful to see how 'hot' the input is and to set the noise gate.">
-            raw:
-            <span class="raw-bar"><span class="raw-bar-fill" id="raw-low"></span></span>
-            <span class="raw-bar"><span class="raw-bar-fill" id="raw-mid"></span></span>
-            <span class="raw-bar"><span class="raw-bar-fill" id="raw-high"></span></span>
-          </div>
         </fieldset>
 
         <fieldset>
-          <legend>WS snapshot rate</legend>
-          <label title="How often the server pushes L/M/H snapshots and FFT frames to the browser. Higher = smoother visuals, more bandwidth.">hz <input type="range" id="ws-hz" min="15" max="240" step="1" data-log="1" /> <span id="ws-hz-val"></span></label>
+          <legend>UI refresh rate</legend>
+          <label title="Target rate for the browser visualization. Drives BOTH (a) how often the server pushes L/M/H snapshots and FFT frames over WS, and (b) how often the canvases redraw — they are throttled to match. Snaps to industry-standard frame rates (15 / 24 / 30 / 60 / 90 / 120 fps), capped at 120.">fps <input type="range" id="ws-hz" min="0" max="5" step="1" /> <span id="ws-hz-val"></span></label>
         </fieldset>
 
         <fieldset>

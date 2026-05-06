@@ -19,17 +19,13 @@ const fft   = makeFft(document.getElementById("viz-fft"));
 onMessage("snapshot", (m) => {
   store.low = m.low; store.mid = m.mid; store.high = m.high;
   store.low_raw = m.low_raw; store.mid_raw = m.mid_raw; store.high_raw = m.high_raw;
-  // raw bars in the controls panel
-  const fmt = (v) => `${Math.min(100, v * 100).toFixed(0)}%`;
-  document.getElementById("raw-low").style.width  = fmt(m.low_raw);
-  document.getElementById("raw-mid").style.width  = fmt(m.mid_raw);
-  document.getElementById("raw-high").style.width = fmt(m.high_raw);
 });
 
 onMessage("meta", (m) => {
   store.meta = { ...store.meta, ...m };
   if (m.fft_db_floor !== undefined) store.fft_db_floor = m.fft_db_floor;
   if (m.fft_db_ceiling !== undefined) store.fft_db_ceiling = m.fft_db_ceiling;
+  if (m.fft_send_raw_db !== undefined) store.fft_send_raw_db = !!m.fft_send_raw_db;
   // When FFT is disabled, drop the last frame so the viz shows "FFT disabled"
   // instead of a frozen spectrum from the moment of toggle-off.
   if (m.fft_enabled === false) store.fft_bins = null;
@@ -109,46 +105,75 @@ function renderPerfPanel() {
                  r.key === "fft" && stage.enabled === false);
     }
   }
-  // Browser side. raf_ms is the inter-frame interval (~16.67ms at 60fps),
-  // not work time — so display "% over budget" instead of "% of budget",
-  // which lights up only when frames are actually dropped.
+  // Browser side. raf_ms here is the inter-DRAW interval (we throttle draws
+  // to the UI refresh rate). Compare against the target period rather than a
+  // fixed 60 fps budget so reducing the refresh rate doesn't light the bar red.
+  const targetFps = Math.max(1, store.target_ui_fps || 60);
+  const targetPeriod = 1000 / targetFps;
   const raf_avg = avgRing(store.raf_ms_ring);
   const raf_p95 = p95Ring(store.raf_ms_ring);
-  const raf_load = Math.max(0, (raf_avg - 16.667) / 16.667 * 100);
+  const raf_load = Math.max(0, (raf_avg - targetPeriod) / targetPeriod * 100);
   setPerfRow("b_raf", raf_avg, raf_p95, raf_load, false);
   for (const k of ["lines", "bars", "scene", "fft"]) {
     const v = store.viz_perf[k];
     if (!v) continue;
     const a = avgRing(v.ring), p95 = p95Ring(v.ring);
-    setPerfRow("b_" + k, a, p95, (a / 16.667) * 100, false);
+    setPerfRow("b_" + k, a, p95, (a / targetPeriod) * 100, false);
   }
 }
 
 // ----- RAF loop -----
-let lastFrameT = performance.now();
+// We always run at requestAnimationFrame cadence (driven by the monitor) but
+// only redraw when at least `1000 / target_ui_fps` ms have elapsed since the
+// previous draw. The badge measures the actual draw rate, so changing the UI
+// refresh rate slider is reflected directly in the "ui X fps" indicator.
+let lastDrawT = performance.now();
+
+// Tooltips for the top-right badges so it's clear what each number means.
+{
+  const srv = document.getElementById("server-fps");
+  if (srv) srv.title =
+    "Server snapshot rate — how often the server is pushing L/M/H snapshot " +
+    "JSON over the WebSocket. Tracks the UI refresh rate slider. Independent " +
+    "of the FFT enable toggle (FFT frames are sent as separate binary " +
+    "messages and are NOT counted here).";
+  const ui = document.getElementById("ui-fps");
+  if (ui) ui.title =
+    "Browser render rate — how often the canvases are actually being " +
+    "redrawn. The render loop is throttled to the UI refresh rate slider, " +
+    "so this should track that value (capped by the monitor's refresh rate).";
+}
+
 function frame(now) {
-  const dt = now - lastFrameT;
-  lastFrameT = now;
-  // raf delta ring
-  store.raf_ms_ring[store.raf_idx % store.raf_ms_ring.length] = dt;
-  store.raf_idx++;
-  // ui fps badge — rolling 60 frames
-  if ((store.raf_idx & 15) === 0) {
-    const avg = avgRing(store.raf_ms_ring);
-    const fps = avg > 0 ? Math.round(1000 / avg) : 0;
-    document.getElementById("ui-fps").textContent = `ui ${fps} fps`;
-    // server fps from msgTimestamps
-    const ts = store.msgTimestamps;
-    if (ts.length >= 2) {
-      const span = (ts[ts.length - 1] - ts[0]) / 1000;
-      const sfps = span > 0 ? Math.round((ts.length - 1) / span) : 0;
-      document.getElementById("server-fps").textContent = `srv ${sfps} Hz`;
+  const targetFps = Math.max(1, store.target_ui_fps || 60);
+  const minPeriod = 1000 / targetFps - 0.5; // small slack so 60 fps RAF hits 60
+  const elapsed = now - lastDrawT;
+  if (elapsed >= minPeriod) {
+    // Record the inter-draw interval (not the inter-RAF interval) so the
+    // "ui fps" badge reflects actual draw cadence, which the UI refresh rate
+    // slider controls.
+    store.raf_ms_ring[store.raf_idx % store.raf_ms_ring.length] = elapsed;
+    store.raf_idx++;
+    lastDrawT = now;
+
+    if ((store.raf_idx & 15) === 0) {
+      const avg = avgRing(store.raf_ms_ring);
+      const fps = avg > 0 ? Math.round(1000 / avg) : 0;
+      document.getElementById("ui-fps").textContent = `ui ${fps} fps`;
+      // Server snapshot rate (snapshot JSON only; binary FFT frames excluded
+      // so the FFT enable toggle doesn't move this number).
+      const ts = store.snapshotTimestamps;
+      if (ts.length >= 2) {
+        const span = (ts[ts.length - 1] - ts[0]) / 1000;
+        const sfps = span > 0 ? Math.round((ts.length - 1) / span) : 0;
+        document.getElementById("server-fps").textContent = `srv ${sfps} Hz`;
+      }
     }
+    lines.draw();
+    bars.draw();
+    scene.draw();
+    fft.draw();
   }
-  lines.draw();
-  bars.draw();
-  scene.draw();
-  fft.draw();
   requestAnimationFrame(frame);
 }
 

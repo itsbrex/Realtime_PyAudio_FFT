@@ -28,6 +28,7 @@ from .config import Config, Persister, config_to_dict, load_config
 from .control.dispatcher import Dispatcher
 from .dsp.features import AutoScaler, ExpSmoother
 from .dsp.fft import FFTWorker
+from .dsp.fft_postprocess import FFTPostProcessor
 from .dsp.filters import FilterBank
 from .dsp.worker import DSPWorker
 from .io.http_server import StaticHTTPServer
@@ -90,6 +91,7 @@ class App:
         self.auto_scaler: AutoScaler | None = None
         self.dsp_worker: DSPWorker | None = None
         self.fft_worker: FFTWorker | None = None
+        self.fft_postprocessor: FFTPostProcessor | None = None
         self.osc_sender: OscSender | None = None
         self.osc_task: asyncio.Task | None = None
         self.ws: WSServer | None = None
@@ -119,6 +121,7 @@ class App:
         self.auto_scaler = AutoScaler(
             sr=sr,
             blocksize=cfg.audio.blocksize,
+            tau_attack_s=cfg.autoscale.tau_attack_s,
             tau_release_s=cfg.autoscale.tau_release_s,
             noise_floor=cfg.autoscale.noise_floor,
             strength=cfg.autoscale.strength,
@@ -184,6 +187,25 @@ class App:
             blocksize=cfg.audio.blocksize,
             perf_ring=self.perf_dsp,
         )
+        self.fft_postprocessor = FFTPostProcessor(
+            n_bins=cfg.fft.n_bins,
+            f_min=cfg.fft.f_min,
+            sr=self.stream.samplerate,
+            bands={
+                "low":  {"lo_hz": cfg.dsp.low.lo_hz,  "hi_hz": cfg.dsp.low.hi_hz},
+                "mid":  {"lo_hz": cfg.dsp.mid.lo_hz,  "hi_hz": cfg.dsp.mid.hi_hz},
+                "high": {"lo_hz": cfg.dsp.high.lo_hz, "hi_hz": cfg.dsp.high.hi_hz},
+            },
+            tau=dict(cfg.dsp.tau),
+            tau_release_s=cfg.autoscale.tau_release_s,
+            noise_floor=cfg.autoscale.noise_floor,
+            strength=cfg.autoscale.strength,
+            db_floor=cfg.fft.db_floor,
+            db_ceiling=cfg.fft.db_ceiling,
+            hop_period_s=cfg.fft.hop / self.stream.samplerate,
+            tau_attack_s=cfg.autoscale.tau_attack_s,
+            peak_smear_oct=cfg.fft.peak_smear_oct,
+        )
         self.fft_worker = FFTWorker(
             ring=self.ring,
             fft_event=self.fft_event,
@@ -199,6 +221,7 @@ class App:
             f_min=cfg.fft.f_min,
             perf_ring=self.perf_fft,
             db_floor=cfg.fft.db_floor,
+            post_processor=self.fft_postprocessor,
         )
         self.dsp_worker.start()
         self.fft_worker.start()
@@ -221,6 +244,7 @@ class App:
                 get_send_fft=lambda: self.cfg.osc.send_fft,
                 get_fft_enabled=lambda: self.fft_enabled.is_set(),
                 get_db_floor=lambda: self.cfg.fft.db_floor,
+                get_send_raw_db=lambda: self.cfg.fft.send_raw_db,
             ),
             name="osc-sender",
         )
@@ -243,6 +267,7 @@ class App:
                 get_presets=self.list_presets,
                 get_server_status=self.snapshot_server_status,
                 get_fft_enabled=lambda: self.fft_enabled.is_set(),
+                get_fft_send_raw_db=lambda: self.cfg.fft.send_raw_db,
                 dispatcher_handle=dispatcher,
                 perf_ring=self.perf_ws,
             )
@@ -301,8 +326,12 @@ class App:
             "fft_enabled": self.fft_enabled.is_set(),
             "fft_db_floor": cfg.fft.db_floor,
             "fft_db_ceiling": cfg.fft.db_ceiling,
+            "fft_f_min": cfg.fft.f_min,
+            "fft_send_raw_db": cfg.fft.send_raw_db,
+            "fft_peak_smear_oct": cfg.fft.peak_smear_oct,
             "tau": dict(cfg.dsp.tau),
             "autoscale": {
+                "tau_attack_s": cfg.autoscale.tau_attack_s,
                 "tau_release_s": cfg.autoscale.tau_release_s,
                 "noise_floor": cfg.autoscale.noise_floor,
                 "strength": cfg.autoscale.strength,
@@ -353,6 +382,7 @@ class App:
                 "tau":  dict(cfg.dsp.tau),
             },
             "autoscale": {
+                "tau_attack_s": cfg.autoscale.tau_attack_s,
                 "tau_release_s": cfg.autoscale.tau_release_s,
                 "noise_floor": cfg.autoscale.noise_floor,
                 "strength": cfg.autoscale.strength,
@@ -362,6 +392,7 @@ class App:
                 "window_size": cfg.fft.window_size,
                 "hop": cfg.fft.hop,
                 "f_min": cfg.fft.f_min,
+                "peak_smear_oct": cfg.fft.peak_smear_oct,
             },
         }
 
@@ -480,6 +511,7 @@ class App:
             self.auto_scaler = AutoScaler(
                 sr=new_sr,
                 blocksize=self.cfg.audio.blocksize,
+                tau_attack_s=self.cfg.autoscale.tau_attack_s,
                 tau_release_s=self.cfg.autoscale.tau_release_s,
                 noise_floor=self.cfg.autoscale.noise_floor,
                 strength=self.cfg.autoscale.strength,
@@ -488,8 +520,10 @@ class App:
             self.dsp_worker.filter_bank = self.filter_bank
             self.dsp_worker.smoother = self.smoother
             self.dsp_worker.auto_scaler = self.auto_scaler
-            # FFT worker rebuild for sr
+            # FFT worker rebuild for sr (this also reconfigures the post-processor's
+            # hop_period_s / sr — see FFTWorker.reconfigure).
             self.fft_worker.reconfigure(sr=new_sr)
+            self.fft_postprocessor.reset()
 
             # Update cfg with the device choice
             info = devmod.device_info(new_idx) or {}

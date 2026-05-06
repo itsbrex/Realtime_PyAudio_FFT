@@ -55,7 +55,7 @@ class FFTWorker(threading.Thread):
                  stop_flag: threading.Event, fft_store, on_publish,
                  blocksize: int, sr: float, window_size: int, hop: int,
                  n_bins: int, f_min: float, perf_ring: np.ndarray,
-                 db_floor: float = -60.0):
+                 db_floor: float = -60.0, post_processor=None):
         super().__init__(name="fft-worker", daemon=True)
         self.ring = ring
         self.fft_event = fft_event
@@ -70,6 +70,7 @@ class FFTWorker(threading.Thread):
         self.n_bins = int(n_bins)
         self.f_min = float(f_min)
         self.db_floor = float(db_floor)
+        self.post_processor = post_processor  # FFTPostProcessor or None
         self.read_block_idx = 0
         self.fft_drops = 0
         self.perf_ring = perf_ring
@@ -109,6 +110,13 @@ class FFTWorker(threading.Thread):
             if f_min is not None: self.f_min = float(f_min)
             self._allocate()
             self.read_block_idx = 0  # alignment changed
+        # Mirror to post-processor (if any). Outside the worker lock to avoid
+        # nested-lock surprises — the post-processor has its own _lock.
+        if self.post_processor is not None:
+            self.post_processor.reconfigure(
+                n_bins=self.n_bins, sr=self.sr, f_min=self.f_min,
+                hop_period_s=self.hop / self.sr,
+            )
 
     def reset(self) -> None:
         with self._lock:
@@ -169,7 +177,15 @@ class FFTWorker(threading.Thread):
                 np.multiply(bins, self._bin_count_inv, out=bins)
                 if self._bin_empty_mask.any():
                     bins[self._bin_empty_mask] = EMPTY_BIN_SENTINEL
-                self.fft_store.publish(bins)
+                # Run the post-processor (if present) and publish both streams.
+                # The processor's returned buffer is owned by the processor —
+                # we copy it into a fresh array so concurrent reads from the
+                # store don't race with the next process() call.
+                processed = None
+                if self.post_processor is not None:
+                    proc_view = self.post_processor.process(bins.astype(np.float32))
+                    processed = np.array(proc_view, copy=True)
+                self.fft_store.publish(bins.astype(np.float32), processed)
                 try:
                     self.on_publish()
                 except Exception as e:

@@ -57,7 +57,8 @@ class AutoScaler:
     tanh compressor. Output ~[0, 1]. `strength` blends scaled vs raw values.
     """
 
-    def __init__(self, sr: float, blocksize: int, tau_release_s: float = 60.0,
+    def __init__(self, sr: float, blocksize: int,
+                 tau_attack_s: float = 0.05, tau_release_s: float = 60.0,
                  noise_floor: float = 1e-3, strength: float = 1.0):
         self.sr = float(sr)
         self.blocksize = int(blocksize)
@@ -67,13 +68,15 @@ class AutoScaler:
         self._scratch = np.zeros(3, dtype=np.float64)
         self._scaled = np.zeros(3, dtype=np.float64)
         self._warmed = False
+        self.tau_attack_s = float(tau_attack_s)
         self.tau_release_s = float(tau_release_s)
-        self.set_taus(tau_attack_s=0.05, tau_release_s=self.tau_release_s)
+        self.set_taus(tau_attack_s=self.tau_attack_s, tau_release_s=self.tau_release_s)
 
     def set_taus(self, tau_attack_s: float, tau_release_s: float) -> None:
         dt = self.blocksize / self.sr
         self._a_atk = 1.0 - math.exp(-dt / max(float(tau_attack_s), 1e-3))
         self._a_rel = 1.0 - math.exp(-dt / max(float(tau_release_s), 1e-3))
+        self.tau_attack_s = float(tau_attack_s)
         self.tau_release_s = float(tau_release_s)
 
     def set_noise_floor(self, floor: float) -> None:

@@ -72,8 +72,15 @@ def validate_n_fft_bins(n):
     return n
 
 
-def validate_autoscale(tau_release_s=None, noise_floor=None, strength=None):
+def validate_autoscale(tau_attack_s=None, tau_release_s=None, noise_floor=None, strength=None):
     out = {}
+    if tau_attack_s is not None:
+        if not _is_number(tau_attack_s):
+            raise ValueError("tau_attack_s must be numeric")
+        v = float(tau_attack_s)
+        if not (math.isfinite(v) and 0.001 <= v <= 1.0):
+            raise ValueError("tau_attack_s must be in [1 ms, 1 s]")
+        out["tau_attack_s"] = v
     if tau_release_s is not None:
         if not _is_number(tau_release_s):
             raise ValueError("tau_release_s must be numeric")
@@ -96,6 +103,15 @@ def validate_autoscale(tau_release_s=None, noise_floor=None, strength=None):
             raise ValueError("strength must be in [0, 1]")
         out["strength"] = v
     return out
+
+
+def validate_peak_smear_oct(v):
+    if not _is_number(v):
+        raise ValueError("peak_smear_oct must be numeric")
+    v = float(v)
+    if not (math.isfinite(v) and 0.0 <= v <= 3.0):
+        raise ValueError("peak_smear_oct must be in [0, 3] octaves")
+    return v
 
 
 def validate_ws_snapshot_hz(hz):

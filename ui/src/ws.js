@@ -61,11 +61,6 @@ function decodeFftBinary(buf) {
 }
 
 function onMsg(ev) {
-  // Track inbound msg rate
-  const now = performance.now();
-  store.msgTimestamps.push(now);
-  if (store.msgTimestamps.length > 60) store.msgTimestamps.shift();
-
   if (typeof ev.data !== "string") {
     // Binary -> FFT frame
     const buf = ev.data instanceof ArrayBuffer ? ev.data : null;
@@ -79,6 +74,14 @@ function onMsg(ev) {
   let msg;
   try { msg = JSON.parse(ev.data); }
   catch { return; }
+  // Track snapshot rate independently of FFT binary frames so the badge
+  // reflects "how often does the server push L/M/H state" — invariant under
+  // the FFT enable toggle.
+  if (msg.type === "snapshot") {
+    const now = performance.now();
+    store.snapshotTimestamps.push(now);
+    if (store.snapshotTimestamps.length > 60) store.snapshotTimestamps.shift();
+  }
   const h = handlers[msg.type];
   if (h) h(msg);
   if (msg.type === "error") {

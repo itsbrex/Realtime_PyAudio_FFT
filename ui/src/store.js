@@ -7,7 +7,10 @@ export const store = {
   fft_bins: null, // Float32Array
   fft_db_floor: -60,
   fft_db_ceiling: 0,
-  fft_raw_db: false, // display-only: when true, bypass post-processing and show wire-format dB
+  // FFT mode mirror — server-driven via meta. The UI checkbox just sends a
+  // set_fft_send_raw_db WS message; the value here is reflected from meta on
+  // every meta payload so OSC and the viz can never disagree.
+  fft_send_raw_db: false,
 
   // Meta
   meta: {
@@ -21,7 +24,7 @@ export const store = {
     },
     fft_enabled: false,
     tau: { low: 0.15, mid: 0.06, high: 0.02 },
-    autoscale: { tau_release_s: 60, noise_floor: 0.001, strength: 1.0 },
+    autoscale: { tau_attack_s: 0.05, tau_release_s: 60, noise_floor: 0.001, strength: 1.0 },
     ws_snapshot_hz: 60,
     device: { index: null, name: null }
   },
@@ -34,8 +37,13 @@ export const store = {
     perf: null
   },
 
-  // Server-side message rate measurement
-  msgTimestamps: [], // last 60 perf.now() of any inbound msg
+  // Target browser render rate (Hz). Mirrors the UI refresh rate slider; the
+  // RAF loop in main.js throttles draws to this rate.
+  target_ui_fps: 60,
+
+  // Server-side snapshot rate measurement (only JSON snapshot messages are
+  // counted, so the FFT enable toggle doesn't change this number).
+  snapshotTimestamps: [], // last 60 perf.now() of any inbound "snapshot" msg
 
   // Browser-side perf
   raf_ms_ring: new Array(60).fill(0),

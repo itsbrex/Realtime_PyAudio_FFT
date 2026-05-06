@@ -30,16 +30,31 @@ class FeatureStore:
 
 
 class FFTStore:
+    """Holds the latest FFT frame as a (raw_db, processed) pair.
+
+    Both arrays are updated atomically by `publish`; `read` returns whichever
+    the caller asks for via `kind`. Consumers (OSC, WS) decide which to read
+    based on `cfg.fft.send_raw_db`.
+    """
+
     def __init__(self):
         self._lock = threading.Lock()
-        self._latest: Optional[np.ndarray] = None
+        self._raw_db: Optional[np.ndarray] = None
+        self._processed: Optional[np.ndarray] = None
         self._seq = 0
 
-    def publish(self, frame: np.ndarray) -> None:
+    def publish(self, raw_db: np.ndarray, processed: Optional[np.ndarray]) -> None:
         with self._lock:
-            self._latest = frame
+            self._raw_db = raw_db
+            self._processed = processed
             self._seq += 1
 
-    def read(self):
+    def read(self, kind: str = "raw_db"):
+        """Return (seq, frame). `kind` ∈ {'raw_db', 'processed'}. If the
+        requested stream isn't available (post-processor not running), falls
+        back to raw_db so consumers still get something sensible.
+        """
         with self._lock:
-            return self._seq, self._latest
+            if kind == "processed" and self._processed is not None:
+                return self._seq, self._processed
+            return self._seq, self._raw_db

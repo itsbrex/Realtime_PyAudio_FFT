@@ -53,10 +53,19 @@ class OscSender:
             except Exception as e:
                 log.debug("osc fft send failed: %s", e)
 
+    def send_fft_processed(self, bins: np.ndarray) -> None:
+        # Post-processed values are already in [0, 1] (no sentinels).
+        payload = np.asarray(bins, dtype=np.float32).tolist()
+        for c in self._clients:
+            try:
+                c.send_message("/audio/fft", payload)
+            except Exception as e:
+                log.debug("osc fft send failed: %s", e)
+
 
 async def osc_sender_task(stop, sender_event: asyncio.Event, sender: OscSender,
                           features_store, fft_store, get_send_fft, get_fft_enabled,
-                          get_db_floor):
+                          get_db_floor, get_send_raw_db):
     """Wakes on sender_event; sends one /audio/lmh per audio block."""
     last_seq = 0
     last_fft_seq = 0
@@ -73,7 +82,11 @@ async def osc_sender_task(stop, sender_event: asyncio.Event, sender: OscSender,
             last_seq = seq
             sender.send_lmh(*scaled)
         if get_send_fft() and get_fft_enabled():
-            fseq, frame = fft_store.read()
+            kind = "raw_db" if get_send_raw_db() else "processed"
+            fseq, frame = fft_store.read(kind)
             if fseq != last_fft_seq and frame is not None:
                 last_fft_seq = fseq
-                sender.send_fft(frame, get_db_floor())
+                if kind == "raw_db":
+                    sender.send_fft(frame, get_db_floor())
+                else:
+                    sender.send_fft_processed(frame)

@@ -40,6 +40,10 @@ class Dispatcher:
     async def _set_fft(self, msg):
         enabled = bool(msg.get("enabled", False))
         if enabled:
+            # Reset post-processor state so we don't reuse stale smoother / peak
+            # values from before the FFT was disabled.
+            if self.app.fft_postprocessor is not None:
+                self.app.fft_postprocessor.reset()
             self.app.fft_enabled.set()
         else:
             self.app.fft_enabled.clear()
@@ -58,6 +62,10 @@ class Dispatcher:
         getattr(self.app.cfg.dsp, band).lo_hz = lo
         getattr(self.app.cfg.dsp, band).hi_hz = hi
         self.app.schedule_filter_retune()
+        # The FFT post-processor's per-bin smoothing tau is anchored on band
+        # geometric centers — keep it in sync.
+        if self.app.fft_postprocessor is not None:
+            self.app.fft_postprocessor.update_bands(self.app.snapshot_meta()["bands"])
         self.app.persister.request(commit=commit)
         return [], [{"type": "meta", **self.app.snapshot_meta()}]
 
@@ -67,25 +75,40 @@ class Dispatcher:
         merged = {**self.app.cfg.dsp.tau, **tau}
         self.app.smoother.set_tau(merged)
         self.app.cfg.dsp.tau = merged
+        if self.app.fft_postprocessor is not None:
+            self.app.fft_postprocessor.update_smoothing(merged)
         self.app.persister.request(commit=commit)
         return [], [{"type": "meta", **self.app.snapshot_meta()}]
 
     async def _set_autoscale(self, msg):
         commit = bool(msg.get("commit", True))
         ok = V.validate_autoscale(
+            tau_attack_s=msg.get("tau_attack_s"),
             tau_release_s=msg.get("tau_release_s"),
             noise_floor=msg.get("noise_floor"),
             strength=msg.get("strength"),
         )
-        if "tau_release_s" in ok:
-            self.app.auto_scaler.set_taus(0.05, ok["tau_release_s"])
-            self.app.cfg.autoscale.tau_release_s = ok["tau_release_s"]
+        if "tau_attack_s" in ok or "tau_release_s" in ok:
+            atk = ok.get("tau_attack_s", self.app.cfg.autoscale.tau_attack_s)
+            rel = ok.get("tau_release_s", self.app.cfg.autoscale.tau_release_s)
+            self.app.auto_scaler.set_taus(atk, rel)
+            if "tau_attack_s" in ok:
+                self.app.cfg.autoscale.tau_attack_s = ok["tau_attack_s"]
+            if "tau_release_s" in ok:
+                self.app.cfg.autoscale.tau_release_s = ok["tau_release_s"]
         if "noise_floor" in ok:
             self.app.auto_scaler.set_noise_floor(ok["noise_floor"])
             self.app.cfg.autoscale.noise_floor = ok["noise_floor"]
         if "strength" in ok:
             self.app.auto_scaler.set_strength(ok["strength"])
             self.app.cfg.autoscale.strength = ok["strength"]
+        if self.app.fft_postprocessor is not None:
+            self.app.fft_postprocessor.update_autoscale(
+                tau_attack_s=ok.get("tau_attack_s"),
+                tau_release_s=ok.get("tau_release_s"),
+                noise_floor=ok.get("noise_floor"),
+                strength=ok.get("strength"),
+            )
         self.app.persister.request(commit=commit)
         return [], [{"type": "meta", **self.app.snapshot_meta()}]
 
@@ -152,6 +175,8 @@ class Dispatcher:
                     cfg_band = getattr(self.app.cfg.dsp, name)
                     cfg_band.lo_hz, cfg_band.hi_hz = lo, hi
                 self.app.schedule_filter_retune()
+                if self.app.fft_postprocessor is not None:
+                    self.app.fft_postprocessor.update_bands(self.app.snapshot_meta()["bands"])
                 applied.append("dsp.bands")
             except ValueError as e:
                 log.warning("preset dsp bands invalid: %s", e)
@@ -161,6 +186,8 @@ class Dispatcher:
                 merged = {**self.app.cfg.dsp.tau, **tau}
                 self.app.smoother.set_tau(merged)
                 self.app.cfg.dsp.tau = merged
+                if self.app.fft_postprocessor is not None:
+                    self.app.fft_postprocessor.update_smoothing(merged)
                 applied.append("dsp.tau")
             except ValueError as e:
                 log.warning("preset dsp.tau invalid: %s", e)
@@ -168,19 +195,32 @@ class Dispatcher:
         a = data.get("autoscale", {}) or {}
         try:
             ok = V.validate_autoscale(
+                tau_attack_s=a.get("tau_attack_s"),
                 tau_release_s=a.get("tau_release_s"),
                 noise_floor=a.get("noise_floor"),
                 strength=a.get("strength"),
             )
-            if "tau_release_s" in ok:
-                self.app.auto_scaler.set_taus(0.05, ok["tau_release_s"])
-                self.app.cfg.autoscale.tau_release_s = ok["tau_release_s"]
+            if "tau_attack_s" in ok or "tau_release_s" in ok:
+                atk = ok.get("tau_attack_s", self.app.cfg.autoscale.tau_attack_s)
+                rel = ok.get("tau_release_s", self.app.cfg.autoscale.tau_release_s)
+                self.app.auto_scaler.set_taus(atk, rel)
+                if "tau_attack_s" in ok:
+                    self.app.cfg.autoscale.tau_attack_s = ok["tau_attack_s"]
+                if "tau_release_s" in ok:
+                    self.app.cfg.autoscale.tau_release_s = ok["tau_release_s"]
             if "noise_floor" in ok:
                 self.app.auto_scaler.set_noise_floor(ok["noise_floor"])
                 self.app.cfg.autoscale.noise_floor = ok["noise_floor"]
             if "strength" in ok:
                 self.app.auto_scaler.set_strength(ok["strength"])
                 self.app.cfg.autoscale.strength = ok["strength"]
+            if ok and self.app.fft_postprocessor is not None:
+                self.app.fft_postprocessor.update_autoscale(
+                    tau_attack_s=ok.get("tau_attack_s"),
+                    tau_release_s=ok.get("tau_release_s"),
+                    noise_floor=ok.get("noise_floor"),
+                    strength=ok.get("strength"),
+                )
             if ok:
                 applied.append("autoscale")
         except ValueError as e:
@@ -208,10 +248,34 @@ class Dispatcher:
                 applied.append("fft.window")
             except Exception as e:
                 log.warning("preset fft window/hop invalid: %s", e)
+        if "peak_smear_oct" in f:
+            try:
+                v = V.validate_peak_smear_oct(f["peak_smear_oct"])
+                self.app.cfg.fft.peak_smear_oct = v
+                if self.app.fft_postprocessor is not None:
+                    self.app.fft_postprocessor.update_smear(v)
+                applied.append("fft.peak_smear_oct")
+            except ValueError as e:
+                log.warning("preset fft.peak_smear_oct invalid: %s", e)
 
         if not applied:
             raise ValueError(f"preset {name!r} produced no valid fields")
         self.app.persister.request(commit=True)
+        return [], [{"type": "meta", **self.app.snapshot_meta()}]
+
+    async def _set_fft_send_raw_db(self, msg):
+        send_raw = bool(msg.get("send_raw_db", False))
+        self.app.cfg.fft.send_raw_db = send_raw
+        self.app.persister.request(commit=True)
+        return [], [{"type": "meta", **self.app.snapshot_meta()}]
+
+    async def _set_fft_peak_smear(self, msg):
+        commit = bool(msg.get("commit", True))
+        v = V.validate_peak_smear_oct(msg.get("peak_smear_oct"))
+        self.app.cfg.fft.peak_smear_oct = v
+        if self.app.fft_postprocessor is not None:
+            self.app.fft_postprocessor.update_smear(v)
+        self.app.persister.request(commit=commit)
         return [], [{"type": "meta", **self.app.snapshot_meta()}]
 
     _handlers = {
@@ -223,6 +287,8 @@ class Dispatcher:
         "set_device": _set_device,
         "set_n_fft_bins": _set_n_fft_bins,
         "set_ws_snapshot_hz": _set_ws_snapshot_hz,
+        "set_fft_send_raw_db": _set_fft_send_raw_db,
+        "set_fft_peak_smear": _set_fft_peak_smear,
         "list_presets": _list_presets,
         "save_preset": _save_preset,
         "load_preset": _load_preset,
