@@ -59,6 +59,9 @@ function hide() {
 }
 
 function findTipTarget(node) {
+  // Suppress tooltips while pointing at the slider itself — they get in the
+  // way of dragging. The wrapping label still shows on its text/readout.
+  if (node && node.tagName === "INPUT" && node.type === "range") return null;
   while (node && node.nodeType === 1) {
     if (node.hasAttribute && node.hasAttribute("data-tooltip")) return node;
     node = node.parentNode;

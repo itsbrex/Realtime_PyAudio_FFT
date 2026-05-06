@@ -23,7 +23,7 @@
           <canvas id="viz-lines" width="640" height="200"></canvas>
         </div>
         <div class="viz-card">
-          <div class="viz-title">L/M/H bars + peak hold <label class="inline" title="Visual-only peak-hold decay rate (units per second). Affects the white peak ticks on this graph AND on the FFT graph. Smaller = peaks linger longer; larger = they fall faster. Does not affect DSP or OSC payload."><input type="range" id="peak-decay" min="10" max="200" step="1" style="width:80px;vertical-align:middle" /> <span id="peak-decay-val" style="font-size:11px"></span></label></div>
+          <div class="viz-title">L/M/H bars + peak hold <label class="inline" title="Visual-only peak-hold decay rate (units per second). Affects the white peak ticks on this graph AND on the FFT graph. Smaller = peaks linger longer; larger = they fall faster. Does not affect DSP or OSC payload."><input type="range" id="peak-decay" min="10" max="100" step="1" style="width:80px;vertical-align:middle" /> <span id="peak-decay-val" style="font-size:11px"></span></label></div>
           <canvas id="viz-bars" width="320" height="200"></canvas>
         </div>
         <div class="viz-card">
@@ -88,7 +88,7 @@
         </fieldset>
 
         <fieldset>
-          <legend>Performance</legend>
+          <legend title="Live timing for each stage of the audio → visualization pipeline. Each row shows avg / p95 ms per tick and a load bar (% of that stage's time budget). Server stages: cb = PortAudio callback (per audio block), dsp = L/M/H IIR + RMS + smoother + auto-scaler, fft = windowed FFT + log-bin + per-bin post-processing, ws = WebSocket broadcast. Browser stages: raf = inter-draw interval vs target fps, lines/bars/scene/fft = per-canvas paint cost. Bar turns amber ≥50%, red ≥80%. Counters: cb_overruns = audio callback overruns (xruns), dsp_drops / fft_drops = blocks the worker couldn't keep up with — all should stay 0 in normal operation.">Performance</legend>
           <div id="perf-rows"></div>
           <div class="counters">
             <span>cb_overruns: <b id="cb_overruns">0</b></span>

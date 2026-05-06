@@ -46,4 +46,4 @@ ws:
   snapshot_hz: 60
   http_port: 8766
 ui:
-  peak_decay_per_s: 0.5
+  peak_decay_per_s: 0.3
