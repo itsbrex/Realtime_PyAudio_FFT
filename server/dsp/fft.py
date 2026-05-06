@@ -87,16 +87,25 @@ class FFTWorker(threading.Thread):
             raise ValueError("window_size/hop must be multiples of blocksize")
         self.window_buf = np.zeros(ws, dtype=np.float32)
         self.hann = np.hanning(ws).astype(np.float32)
+        # Window correction: a sine of amplitude A produces a peak rfft bin
+        # magnitude of ≈A·sum(hann)/2 after windowing. We want each log bin's
+        # mean-of-power to equal that band's RMS² (so a pure sine at amplitude
+        # A reads as A²/2 = sine RMS², matching the time-domain RMS² used by
+        # the L/M/H pipeline). That gives `power = mag² · 2 / sum(hann)²`.
+        coh_gain = float(np.sum(self.hann.astype(np.float64)))
+        self._win_power_corr = 2.0 / max(coh_gain * coh_gain, 1e-12)
         self.spectrum = np.zeros(ws // 2 + 1, dtype=np.complex64)
         self.mag_buf = np.zeros(ws // 2 + 1, dtype=np.float32)
-        self.db_buf = np.zeros(ws // 2 + 1, dtype=np.float32)
+        self.power_buf = np.zeros(ws // 2 + 1, dtype=np.float64)
         self.bin_assign, self.bin_valid_mask, self.bin_idx_valid, self.bin_counts = build_log_bin_map(
             ws, self.sr, self.n_bins, self.f_min
         )
-        # Precompute the divisor (1/count where count>0; 1 elsewhere — empty bins
-        # are overwritten with floor below) and the empty-bin mask.
+        # Precompute the divisor (1/count where count>0; 0 elsewhere — empty bins
+        # are overwritten with sentinel below) and the empty-bin mask.
         self._bin_count_inv = np.where(self.bin_counts > 0, 1.0 / np.maximum(self.bin_counts, 1.0), 0.0)
         self._bin_empty_mask = self.bin_counts == 0
+        # Preallocated output buffer (float32 wire format).
+        self.bins_f32 = np.zeros(self.n_bins, dtype=np.float32)
 
     # ------------- live retune from asyncio thread -------------
     def reconfigure(self, n_bins: int | None = None, sr: float | None = None,
@@ -161,31 +170,38 @@ class FFTWorker(threading.Thread):
                 np.multiply(self.window_buf, self.hann, out=self.window_buf)
                 np.fft.rfft(self.window_buf, out=self.spectrum)
                 np.abs(self.spectrum, out=self.mag_buf)
-                np.add(self.mag_buf, EPS, out=self.mag_buf)
-                np.log10(self.mag_buf, out=self.db_buf)
-                np.multiply(self.db_buf, 20.0, out=self.db_buf)
+                # Window-corrected RMS² power per rfft bin (float64 for log10).
+                self.power_buf[:] = self.mag_buf
+                np.multiply(self.power_buf, self.power_buf, out=self.power_buf)
+                self.power_buf *= self._win_power_corr
+                # Mean-of-power log-bin aggregation: sum(power) per log bin /
+                # rfft-count per log bin. Mean-of-dB underweights peaks; this
+                # is energy-conserving.
                 bins = np.bincount(
                     self.bin_idx_valid,
-                    weights=self.db_buf[self.bin_valid_mask],
+                    weights=self.power_buf[self.bin_valid_mask],
                     minlength=self.n_bins,
                 )
                 if bins.shape[0] > self.n_bins:
                     bins = bins[: self.n_bins]
-                # Mean dB per log bin (where it has any rfft bins mapped to it);
-                # empty log bins get the floor so they render as "no signal" instead
-                # of "0 dB", which the UI would otherwise paint as max.
                 np.multiply(bins, self._bin_count_inv, out=bins)
+                # → dB (10·log10(RMS²) ≡ 20·log10(RMS)). Floor at EPS to keep
+                # log10 finite; empty bins are overwritten with sentinel below.
+                np.maximum(bins, EPS, out=bins)
+                np.log10(bins, out=bins)
+                np.multiply(bins, 10.0, out=bins)
+                # Cast once into the preallocated float32 wire buffer.
+                self.bins_f32[:] = bins
                 if self._bin_empty_mask.any():
-                    bins[self._bin_empty_mask] = EMPTY_BIN_SENTINEL
+                    self.bins_f32[self._bin_empty_mask] = EMPTY_BIN_SENTINEL
                 # Run the post-processor (if present) and publish both streams.
-                # The processor's returned buffer is owned by the processor —
-                # we copy it into a fresh array so concurrent reads from the
-                # store don't race with the next process() call.
+                # Both consumers receive fresh arrays so they can safely read
+                # while the next hop is being computed in-place.
                 processed = None
                 if self.post_processor is not None:
-                    proc_view = self.post_processor.process(bins.astype(np.float32))
+                    proc_view = self.post_processor.process(self.bins_f32)
                     processed = np.array(proc_view, copy=True)
-                self.fft_store.publish(bins.astype(np.float32), processed)
+                self.fft_store.publish(self.bins_f32.copy(), processed)
                 try:
                     self.on_publish()
                 except Exception as e:

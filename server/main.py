@@ -111,8 +111,8 @@ class App:
         }
 
     def _band_centers(self) -> tuple:
-        """Geometric-mean center of each L/M/H band (Hz). Used to evaluate the
-        spectral-tilt offset that derives per-band noise floors in AutoScaler.
+        """Geometric-mean center of each L/M/H band (Hz). Used by AutoScaler
+        to evaluate the per-band linear pre-tilt gain.
         """
         import math as _math
         d = self.cfg.dsp
@@ -139,6 +139,8 @@ class App:
             strength=cfg.autoscale.strength,
             tilt_db_per_oct=cfg.fft.tilt_db_per_oct,
             band_centers=self._band_centers(),
+            db_floor=cfg.fft.db_floor,
+            db_ceiling=cfg.fft.db_ceiling,
         )
 
     def _signal_dsp_published(self) -> None:
@@ -535,6 +537,8 @@ class App:
                 strength=self.cfg.autoscale.strength,
                 tilt_db_per_oct=self.cfg.fft.tilt_db_per_oct,
                 band_centers=self._band_centers(),
+                db_floor=self.cfg.fft.db_floor,
+                db_ceiling=self.cfg.fft.db_ceiling,
             )
             # Swap into worker
             self.dsp_worker.filter_bank = self.filter_bank

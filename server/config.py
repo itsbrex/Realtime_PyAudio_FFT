@@ -59,8 +59,8 @@ class FftCfg:
     window_size: int = 1024
     hop: int = 512
     f_min: float = 30.0
-    db_floor: float = -60.0
-    db_ceiling: float = 0.0
+    db_floor: float = -90.0
+    db_ceiling: float = -10.0
     # Spatial-smear width (in octaves) applied to the per-bin peak follower
     # before the auto-scaler divides by it. 0 = each bin self-normalizes
     # independently (single-tone bins can over-attenuate themselves). Larger

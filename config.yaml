@@ -1,7 +1,7 @@
 audio:
   device:
     name: MacBook Pro Microphone
-    index: 1
+    index: 3
   blocksize: 256
   channels: 1
 dsp:
@@ -21,7 +21,7 @@ dsp:
 autoscale:
   tau_attack_s: 0.23980228135543274
   tau_release_s: 60.0
-  noise_floor: 0.0005639751999999999
+  noise_floor: 0.0005359374999999998
   strength: 1.0
 fft:
   enabled: true
@@ -29,8 +29,8 @@ fft:
   window_size: 1024
   hop: 512
   f_min: 30.0
-  db_floor: -60.0
-  db_ceiling: 0.0
+  db_floor: -90.0
+  db_ceiling: -10.0
   peak_smear_oct: 0.1
   tilt_db_per_oct: 2.0
   send_raw_db: false

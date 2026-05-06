@@ -66,7 +66,7 @@ class Dispatcher:
         # geometric centers — keep it in sync.
         if self.app.fft_postprocessor is not None:
             self.app.fft_postprocessor.update_bands(self.app.snapshot_meta()["bands"])
-        # Per-band noise gates (L/M/H) are derived from band centers + tilt.
+        # AutoScaler's per-band linear pre-tilt depends on band centers.
         self.app.auto_scaler.set_band_centers(self.app._band_centers())
         self.app.persister.request(commit=commit)
         return [], [{"type": "meta", **self.app.snapshot_meta()}]
@@ -304,7 +304,7 @@ class Dispatcher:
         self.app.cfg.fft.tilt_db_per_oct = v
         if self.app.fft_postprocessor is not None:
             self.app.fft_postprocessor.update_tilt(v)
-        # Mirror to L/M/H AutoScaler so the per-band noise gates rebalance too.
+        # Mirror to L/M/H AutoScaler so its per-band linear pre-tilt updates too.
         self.app.auto_scaler.set_tilt(v)
         self.app.persister.request(commit=commit)
         return [], [{"type": "meta", **self.app.snapshot_meta()}]

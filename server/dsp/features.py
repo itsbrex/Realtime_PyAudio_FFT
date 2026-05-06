@@ -1,4 +1,11 @@
-"""Per-band exponential smoother + rolling auto-scaler. Plan section 6.3."""
+"""Per-band exponential smoother + rolling auto-scaler.
+
+Mirrors `dsp/fft_postprocess.py`: tilt is applied as a per-band LINEAR
+pre-multiplier on the smoothed RMS, the noise floor is a single global
+linear value, and the strength<1 baseline is a dB-mapped [0,1] curve
+(with the same gate-zeroing). One `noise_floor` slider therefore gates
+both pipelines in lockstep.
+"""
 from __future__ import annotations
 
 import math
@@ -51,54 +58,60 @@ class ExpSmoother:
 
 
 TILT_REF_HZ = 1000.0
+EPS = 1e-12
 
 
 class AutoScaler:
     """Rolling per-band normalizer.
 
-    Asymmetric peak follower (fast attack, slow release) + soft noise gate +
-    tanh compressor. Output ~[0, 1]. `strength` blends scaled vs raw values.
+    Pipeline (pre-tilted smoothed RMS in `v`):
+        peak  ← asymmetric one-pole follower of v (fast attack, slow release)
+        gated ← max(0, v - noise_floor)
+        sc    ← tanh( gated / max(peak, noise_floor) )          # in [0, 1]
+        raw   ← clip( (20·log10(v) - db_floor) / (db_ceil-db_floor), 0, 1 )
+                with raw=0 where v < noise_floor                # in [0, 1]
+        out   ← strength·sc + (1-strength)·raw                  # in [0, 1]
 
-    The noise gate is per-band: a single global `noise_floor` is multiplied by
-    a frequency-dependent scale derived from `tilt_db_per_oct` evaluated at
-    each band's geometric center (zero at 1 kHz). Positive tilt LIFTS high-band
-    sensitivity (lower effective gate) and PUSHES DOWN low-band sensitivity
-    (higher effective gate), compensating for the natural downward slope of
-    music spectra so the same global gate fires uniformly across L/M/H. Mirrors
-    the FFTPostProcessor tilt so both pipelines respond in lockstep.
+    Tilt is applied as a per-band linear pre-multiplier on `values_in`
+    (= 10^(tilt_db/20), where tilt_db = tilt_db_per_oct · log2(f_c / 1 kHz)).
+    Same shape as the FFT post-processor, where tilt is added in dB before
+    the dB→linear conversion — so a single global noise_floor gates both
+    pipelines identically.
     """
 
     def __init__(self, sr: float, blocksize: int,
                  tau_attack_s: float = 0.05, tau_release_s: float = 60.0,
                  noise_floor: float = 1e-3, strength: float = 1.0,
                  tilt_db_per_oct: float = 0.0,
-                 band_centers: tuple = (100.0, 1000.0, 8000.0)):
+                 band_centers: tuple = (100.0, 1000.0, 8000.0),
+                 db_floor: float = -60.0, db_ceiling: float = 0.0):
         self.sr = float(sr)
         self.blocksize = int(blocksize)
-        self.noise_floor = float(noise_floor)
-        self.strength = float(strength)
+        self.noise_floor = max(0.0, float(noise_floor))
+        self.strength = max(0.0, min(1.0, float(strength)))
         self.tilt_db_per_oct = float(tilt_db_per_oct)
         self._band_centers = np.asarray(band_centers, dtype=np.float64)
-        self._noise_floor_per_band = np.full(3, self.noise_floor, dtype=np.float64)
-        self._recompute_per_band_floor()
-        self._peak = np.array(self._noise_floor_per_band, dtype=np.float64)
-        self._scratch = np.zeros(3, dtype=np.float64)
-        self._scaled = np.zeros(3, dtype=np.float64)
+        self.db_floor = float(db_floor)
+        self.db_ceiling = float(db_ceiling)
+        self._tilt_lin = np.ones(3, dtype=np.float64)
+        self._v = np.zeros(3, dtype=np.float64)         # tilted input
+        self._diff = np.zeros(3, dtype=np.float64)      # peak follower delta
+        self._alpha = np.zeros(3, dtype=np.float64)     # per-band attack/release
+        self._scaled = np.zeros(3, dtype=np.float64)    # tanh output
+        self._raw = np.zeros(3, dtype=np.float64)       # dB-mapped baseline
+        self._peak = np.full(3, max(self.noise_floor, EPS), dtype=np.float64)
         self._warmed = False
         self.tau_attack_s = float(tau_attack_s)
         self.tau_release_s = float(tau_release_s)
+        self._recompute_tilt_lin()
         self.set_taus(tau_attack_s=self.tau_attack_s, tau_release_s=self.tau_release_s)
 
-    def _recompute_per_band_floor(self) -> None:
-        # nf_band = noise_floor * 10^(-tilt_dB(f_c) / 20),
-        # where tilt_dB(f_c) = tilt_db_per_oct * log2(f_c / TILT_REF_HZ).
-        # Positive tilt → high band gets LOWER effective floor; low band gets HIGHER.
-        if self.tilt_db_per_oct == 0.0 or self.noise_floor <= 0.0:
-            self._noise_floor_per_band[:] = self.noise_floor
+    def _recompute_tilt_lin(self) -> None:
+        if self.tilt_db_per_oct == 0.0:
+            self._tilt_lin.fill(1.0)
             return
         tilt_db = self.tilt_db_per_oct * np.log2(np.maximum(self._band_centers, 1e-3) / TILT_REF_HZ)
-        scale = np.power(10.0, -tilt_db / 20.0)
-        np.multiply(scale, self.noise_floor, out=self._noise_floor_per_band)
+        np.power(10.0, tilt_db / 20.0, out=self._tilt_lin)
 
     def set_taus(self, tau_attack_s: float, tau_release_s: float) -> None:
         dt = self.blocksize / self.sr
@@ -109,52 +122,64 @@ class AutoScaler:
 
     def set_noise_floor(self, floor: float) -> None:
         self.noise_floor = max(float(floor), 0.0)
-        self._recompute_per_band_floor()
-        np.maximum(self._peak, self._noise_floor_per_band, out=self._peak)
+        np.maximum(self._peak, max(self.noise_floor, EPS), out=self._peak)
 
     def set_tilt(self, tilt_db_per_oct: float) -> None:
         self.tilt_db_per_oct = float(tilt_db_per_oct)
-        self._recompute_per_band_floor()
-        np.maximum(self._peak, self._noise_floor_per_band, out=self._peak)
+        self._recompute_tilt_lin()
 
     def set_band_centers(self, centers) -> None:
         self._band_centers = np.asarray(centers, dtype=np.float64)
-        self._recompute_per_band_floor()
-        np.maximum(self._peak, self._noise_floor_per_band, out=self._peak)
+        self._recompute_tilt_lin()
 
     def set_strength(self, strength: float) -> None:
         self.strength = max(0.0, min(1.0, float(strength)))
 
     def reset(self) -> None:
-        np.copyto(self._peak, self._noise_floor_per_band)
+        self._peak.fill(max(self.noise_floor, EPS))
         self._warmed = False
 
     def update(self, values_in: np.ndarray, out: np.ndarray) -> np.ndarray:
-        """Compute scaled output (length 3, float64) into `out`. Returns out."""
-        nfpb = self._noise_floor_per_band
+        nf = max(self.noise_floor, EPS)
+        # Pre-tilt
+        np.multiply(values_in, self._tilt_lin, out=self._v)
+        v = self._v
+
+        # Asymmetric peak follower (warm to noise_floor — don't saturate to first sample)
         if not self._warmed:
-            np.maximum(self._peak, values_in, out=self._peak)
+            self._peak.fill(nf)
             self._warmed = True
-        else:
-            # asymmetric one-pole: alpha = a_atk where rising else a_rel
-            self._scratch.fill(self._a_rel)
-            rising = values_in > self._peak
-            self._scratch[rising] = self._a_atk
-            # peak += alpha * (values_in - peak)
-            self._peak += self._scratch * (values_in - self._peak)
-        denom = np.maximum(self._peak, nfpb)
-        np.subtract(values_in, nfpb, out=self._scaled)
+        np.subtract(v, self._peak, out=self._diff)
+        rising = self._diff > 0
+        self._alpha.fill(self._a_rel)
+        self._alpha[rising] = self._a_atk
+        self._peak += self._alpha * self._diff
+
+        # tanh compressor: scaled = tanh( max(0, v - nf) / max(peak, nf) )
+        np.subtract(v, self.noise_floor, out=self._scaled)
         np.maximum(self._scaled, 0.0, out=self._scaled)
-        np.divide(self._scaled, denom, out=self._scaled)
+        np.divide(self._scaled, np.maximum(self._peak, nf), out=self._scaled)
         np.tanh(self._scaled, out=self._scaled)
 
         s = self.strength
         if s >= 1.0:
             np.copyto(out, self._scaled)
-        elif s <= 0.0:
-            np.copyto(out, values_in)
+            return out
+
+        # dB-mapped baseline in [0, 1]; gate-zero below noise floor.
+        span = max(1.0, self.db_ceiling - self.db_floor)
+        below = v < self.noise_floor
+        np.maximum(v, EPS, out=self._raw)
+        np.log10(self._raw, out=self._raw)
+        np.multiply(self._raw, 20.0, out=self._raw)
+        np.subtract(self._raw, self.db_floor, out=self._raw)
+        np.divide(self._raw, span, out=self._raw)
+        np.clip(self._raw, 0.0, 1.0, out=self._raw)
+        self._raw[below] = 0.0
+
+        if s <= 0.0:
+            np.copyto(out, self._raw)
         else:
-            # blend: out = s * scaled + (1-s) * values_in
             np.multiply(self._scaled, s, out=out)
-            out += (1.0 - s) * values_in
+            out += (1.0 - s) * self._raw
         return out
