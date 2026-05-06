@@ -11,7 +11,7 @@ A highly optimized, minimal latency, localhost Python server that captures live 
 
 **The browser is a thin renderer.** All signal post-processing (smoothing, peak normalization, gating, tanh compression, strength blending, spatial peak smearing) runs server-side, in the same code path that feeds OSC. So **what you see in the FFT graph is byte-identical to the `/audio/fft` OSC payload** — you can tune every knob from the UI and trust the picture matches what downstream apps receive.
 
-The browser UI also sends control messages back (toggle FFT, change band crossovers, switch input device, change smoothing, save/load presets). All settings persist to `config.yaml`, so the server boots back into the last-used state.
+The browser UI also sends control messages back (toggle FFT, change band crossovers, switch input device, change smoothing, save/load presets). All settings persist to `configs/main.yaml`, so the server boots back into the last-used state.
 
 End-to-end input-to-OSC latency target: **8–15 ms**. The audio callback is allocation-free and runs no DSP — all filtering and FFT runs in worker threads. See `realtime_audio_server_plan.md` for the full design.
 
@@ -41,7 +41,7 @@ pip install -e ".[dev]"
 python -m server.main --open
 
 ```bash
-audio-server                  # reads ./config.yaml, opens WS on 8765, UI on 8766
+audio-server                  # reads ./configs/main.yaml, opens WS on 8765, UI on 8766
 audio-server --open           # also opens the UI in your default browser
 audio-server --no-ws          # headless OSC-only mode
 audio-server --device 2       # override input device by index
@@ -65,7 +65,7 @@ The server can run with both enabled (default), or in OSC-only headless mode (`-
 
 ### 1. Listening for audio features over OSC
 
-OSC is sent to every destination listed under `osc.destinations` in `config.yaml`. Default is `127.0.0.1:9000`. Add more (or change the port) by editing the YAML and restarting:
+OSC is sent to every destination listed under `osc.destinations` in `configs/main.yaml`. Default is `127.0.0.1:9000`. Add more (or change the port) by editing the YAML and restarting:
 
 ```yaml
 osc:
@@ -109,7 +109,7 @@ osc_server.BlockingOSCUDPServer(("127.0.0.1", 9000), d).serve_forever()
 
 **Notes:**
 - L/M/H over OSC is the **post-autoscale** value in `~[0, 1]`. Pre-autoscale (raw smoothed RMS) is only available over WebSocket (`low_raw/mid_raw/high_raw` in the snapshot message). A `/audio/lmh_raw` channel is on the v1.1 list.
-- FFT bins over OSC default to **post-processed `[0, 1]` floats** — same per-bin auto-scaler pipeline used for L/M/H, just per FFT bin instead of per band. So the FFT and L/M/H feeds share the same scale and gate semantics out of the box. To get the raw dB log spectrum instead (e.g. for a meter or analyzer), flip `fft.send_raw_db: true` in `config.yaml` (or send `set_fft_send_raw_db` over WS, or toggle the "raw dB" checkbox in the UI). The same flag controls the WS binary frame's contents, so the UI viz always matches what's on the OSC wire.
+- FFT bins over OSC default to **post-processed `[0, 1]` floats** — same per-bin auto-scaler pipeline used for L/M/H, just per FFT bin instead of per band. So the FFT and L/M/H feeds share the same scale and gate semantics out of the box. To get the raw dB log spectrum instead (e.g. for a meter or analyzer), flip `fft.send_raw_db: true` in `configs/main.yaml` (or send `set_fft_send_raw_db` over WS, or toggle the "raw dB" checkbox in the UI). The same flag controls the WS binary frame's contents, so the UI viz always matches what's on the OSC wire.
 - The FFT stream is gated by **two** flags: `fft.enabled` (turns the worker on) and `osc.send_fft` (decides whether to ship FFT bins to OSC consumers in addition to the WS client). You can have FFT enabled for the browser but skipped on OSC if you don't need it there.
 
 ### 2. Controlling the server over WebSocket
@@ -148,7 +148,7 @@ Text frames, JSON. Validation runs before any mutation; on failure you get an `e
 | `set_ws_snapshot_hz`  | `hz: number, commit?: bool`                                                                      | Range `[15, 240]`. Affects WS L/M/H rate only — OSC stays at full block rate, FFT WS frames stay on the FFT worker's clock.       |
 | `list_presets`        | —                                                                                                | Returns a `presets` message.                                                                                                     |
 | `save_preset`         | `name: string`                                                                                   | Name `1–64` chars, `[A-Za-z0-9_\- ]` only. Snapshots DSP / autoscale / FFT view into `<config_dir>/preset-<name>.yaml`.           |
-| `load_preset`         | `name: string`                                                                                   | Validates each field, applies via the same handlers a slider would, then persists the resulting state to `config.yaml`.          |
+| `load_preset`         | `name: string`                                                                                   | Validates each field, applies via the same handlers a slider would, then persists the resulting state to `configs/main.yaml`.          |
 
 **Drag-aware persistence.** Sliders should send `commit: false` while dragging and `commit: true` on release. The audio mutation is applied immediately either way; only the YAML write is debounced (1 s during drag, 50 ms on commit, capped at 250 ms wall-clock from the first dirty change).
 
@@ -223,12 +223,12 @@ The two FFT-specific knobs that don't have an L/M/H equivalent:
 Three equivalent ways, depending on what you have:
 
 - **WebSocket:** send `{"type": "set_fft", "enabled": true}`.
-- **Edit `config.yaml`:** set `fft.enabled: true` and restart the server. (Live edits to `config.yaml` are not picked up — the server *writes* the file but does not watch it.)
-- **For OSC consumers:** also set `osc.send_fft: true` in `config.yaml`, otherwise FFT bins won't be sent over OSC even when the worker is on.
+- **Edit `configs/main.yaml`:** set `fft.enabled: true` and restart the server. (Live edits to `configs/main.yaml` are not picked up — the server *writes* the file but does not watch it.)
+- **For OSC consumers:** also set `osc.send_fft: true` in `configs/main.yaml`, otherwise FFT bins won't be sent over OSC even when the worker is on.
 
 ### 5. Picking the input device
 
-Either set it in `config.yaml`:
+Either set it in `configs/main.yaml`:
 
 ```yaml
 audio:
@@ -247,32 +247,32 @@ If you don't need the browser UI or runtime control:
 audio-server --no-ws
 ```
 
-The WS server, broadcaster, and dispatcher are not started; only OSC + the audio pipeline + persistence run. Change settings by editing `config.yaml` and restarting (or temporarily run with WS enabled to tune via the UI, then drop back to `--no-ws`).
+The WS server, broadcaster, and dispatcher are not started; only OSC + the audio pipeline + persistence run. Change settings by editing `configs/main.yaml` and restarting (or temporarily run with WS enabled to tune via the UI, then drop back to `--no-ws`).
 
 ### 7. Defaults summary
 
 | Knob                      | Default        | Where to change                                  |
 |---------------------------|----------------|--------------------------------------------------|
-| WS server port            | `8765`         | `config.yaml: ws.port`                           |
-| UI HTTP port              | `8766`         | `config.yaml: ws.http_port`                      |
-| OSC destination           | `127.0.0.1:9000` | `config.yaml: osc.destinations[]`              |
-| OSC sends FFT             | `false`        | `config.yaml: osc.send_fft`                      |
-| FFT enabled               | `false`        | WS `set_fft` or `config.yaml: fft.enabled`       |
-| FFT bins                  | `128`          | WS `set_n_fft_bins` or `config.yaml: fft.n_bins` |
-| FFT stream over OSC/WS    | post-processed `[0, 1]` | WS `set_fft_send_raw_db` (or "raw dB" UI checkbox) or `config.yaml: fft.send_raw_db` |
-| FFT peak smear            | `0.3` oct      | WS `set_fft_peak_smear` or `config.yaml: fft.peak_smear_oct` |
-| Bandpass edges            | low `30–250`, mid `250–4000`, high `4000–16000` Hz | WS `set_band` or `config.yaml: dsp.{low,mid,high}` |
-| Smoothing τ (low/mid/high)| `0.15 / 0.06 / 0.02` s — drives both L/M/H and (interpolated) FFT smoother | WS `set_smoothing` or `config.yaml: dsp.tau` |
-| Peak-follower attack τ    | `0.05` s       | WS `set_autoscale.tau_attack_s` or `config.yaml: autoscale.tau_attack_s` |
-| Peak-follower release τ   | `60` s         | WS `set_autoscale.tau_release_s` or `config.yaml: autoscale.tau_release_s` |
+| WS server port            | `8765`         | `configs/main.yaml: ws.port`                           |
+| UI HTTP port              | `8766`         | `configs/main.yaml: ws.http_port`                      |
+| OSC destination           | `127.0.0.1:9000` | `configs/main.yaml: osc.destinations[]`              |
+| OSC sends FFT             | `false`        | `configs/main.yaml: osc.send_fft`                      |
+| FFT enabled               | `false`        | WS `set_fft` or `configs/main.yaml: fft.enabled`       |
+| FFT bins                  | `128`          | WS `set_n_fft_bins` or `configs/main.yaml: fft.n_bins` |
+| FFT stream over OSC/WS    | post-processed `[0, 1]` | WS `set_fft_send_raw_db` (or "raw dB" UI checkbox) or `configs/main.yaml: fft.send_raw_db` |
+| FFT peak smear            | `0.3` oct      | WS `set_fft_peak_smear` or `configs/main.yaml: fft.peak_smear_oct` |
+| Bandpass edges            | low `30–250`, mid `250–4000`, high `4000–16000` Hz | WS `set_band` or `configs/main.yaml: dsp.{low,mid,high}` |
+| Smoothing τ (low/mid/high)| `0.15 / 0.06 / 0.02` s — drives both L/M/H and (interpolated) FFT smoother | WS `set_smoothing` or `configs/main.yaml: dsp.tau` |
+| Peak-follower attack τ    | `0.05` s       | WS `set_autoscale.tau_attack_s` or `configs/main.yaml: autoscale.tau_attack_s` |
+| Peak-follower release τ   | `60` s         | WS `set_autoscale.tau_release_s` or `configs/main.yaml: autoscale.tau_release_s` |
 | Noise floor               | `0.001` linear RMS (~−60 dBFS) — applied to L/M/H AND FFT (calibrated)  | WS `set_autoscale.noise_floor` |
 | Autoscale strength        | `1.0`          | WS `set_autoscale.strength` (0 = pass-through raw, 1 = fully scaled) |
-| WS snapshot rate          | `60` Hz        | WS `set_ws_snapshot_hz` or `config.yaml: ws.snapshot_hz` |
+| WS snapshot rate          | `60` Hz        | WS `set_ws_snapshot_hz` or `configs/main.yaml: ws.snapshot_hz` |
 
 ---
 
 ## Notes
 
-- `config.yaml` is **rewritten automatically** every time the UI changes a setting (atomic, debounced). Make sure its parent directory is writable. Saved presets live alongside as `preset-<name>.yaml`.
+- `configs/main.yaml` is **rewritten automatically** every time the UI changes a setting (atomic, debounced). Make sure its parent directory is writable. Saved presets live alongside as `preset-<name>.yaml`.
 - For non-default stereo channel pairs (aggregate devices, multichannel pro interfaces), pick the input channel via `sounddevice`'s device mapping rather than relying on the auto stereo mono-mix.
 - Tests live under `tests/` but the suite is empty for now.

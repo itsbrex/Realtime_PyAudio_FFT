@@ -21,7 +21,7 @@ dsp:
 autoscale:
   tau_attack_s: 0.23980228135543274
   tau_release_s: 60.0
-  noise_floor: 0.0005451776
+  noise_floor: 0.0005735339
   strength: 1.0
   master_gain: 1.0
 fft:
@@ -49,8 +49,8 @@ ws:
 ui:
   peak_decay_per_s: 0.6
   layout:
-    split_x: 0.30864100328607513
-    split_y: 0.4959065644625273
+    split_x: 0.3287296264281842
+    split_y: 0.4542996778054254
     quadrants:
     - bars
     - lines
