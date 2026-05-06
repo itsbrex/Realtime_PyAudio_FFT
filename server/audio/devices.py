@@ -30,15 +30,22 @@ def list_input_devices() -> list[dict[str, Any]]:
 
 
 def default_input() -> int | None:
+    # sd.default.device may be a list, tuple, plain int, or sounddevice's
+    # _InputOutputPair (subscriptable but not a list/tuple). Duck-type the
+    # first-element access so all platforms / sounddevice versions resolve.
     try:
         d = sd.default.device
-        if isinstance(d, (list, tuple)):
-            return int(d[0]) if d[0] is not None and d[0] != -1 else None
         if isinstance(d, int) and d >= 0:
             return int(d)
+        try:
+            in_idx = d[0]
+        except (TypeError, IndexError, KeyError):
+            return None
+        if in_idx is None or in_idx == -1:
+            return None
+        return int(in_idx)
     except Exception:
-        pass
-    return None
+        return None
 
 
 def signal_active_probe(devices: list[dict], duration: float = 0.2, threshold: float = 1e-4) -> dict[int, bool]:

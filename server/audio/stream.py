@@ -12,7 +12,13 @@ class StreamHandle:
     def __init__(self, stream: sd.InputStream):
         self.stream = stream
         self.samplerate = float(stream.samplerate)
-        self.latency = float(getattr(stream, "latency", 0.0) or 0.0)
+        # InputStream.latency is normally a scalar, but some sounddevice
+        # builds / duplex paths report a (input, output) tuple — pick the
+        # input side so the warning math below stays meaningful.
+        lat_raw = getattr(stream, "latency", 0.0) or 0.0
+        if isinstance(lat_raw, (list, tuple)):
+            lat_raw = lat_raw[0] if lat_raw else 0.0
+        self.latency = float(lat_raw)
         self.blocksize = int(stream.blocksize) if stream.blocksize else 0
         self.channels = int(stream.channels)
         self.device = stream.device

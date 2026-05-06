@@ -26,6 +26,22 @@ class StaticHTTPServer:
         root_str = str(self.root)
 
         class Handler(http.server.SimpleHTTPRequestHandler):
+            # Force correct JS / WASM / JSON mime types regardless of host OS.
+            # On Windows, mimetypes is registry-driven and frequently maps .js
+            # to text/plain or application/x-javascript — browsers then refuse
+            # to load ES modules and the UI silently dies. SimpleHTTPRequestHandler
+            # consults extensions_map first, so this overrides the registry path.
+            extensions_map = {
+                **http.server.SimpleHTTPRequestHandler.extensions_map,
+                ".js":   "text/javascript",
+                ".mjs":  "text/javascript",
+                ".css":  "text/css",
+                ".json": "application/json",
+                ".wasm": "application/wasm",
+                ".svg":  "image/svg+xml",
+                ".html": "text/html",
+            }
+
             def __init__(self, *a, **kw):
                 super().__init__(*a, directory=root_str, **kw)
 

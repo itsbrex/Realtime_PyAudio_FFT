@@ -34,7 +34,13 @@ class AudioCallback:
         t0 = time.perf_counter_ns()
         if status and getattr(status, "input_overflow", False):
             self.cb_overruns += 1
-        if self.channels == 1:
+        # Drive the mono-mix off in_data's actual width, not self.channels.
+        # PortAudio / sounddevice may clamp the opened stream to fewer channels
+        # than requested (e.g. config asks for stereo on a mono USB mic on
+        # Linux/Windows) — indexing in_data[:, 1] under that condition would
+        # raise IndexError from the audio thread.
+        ch = in_data.shape[1] if in_data.ndim == 2 else 1
+        if ch == 1:
             np.copyto(self.mono_buf, in_data[:, 0])
         else:
             np.add(in_data[:, 0], in_data[:, 1], out=self.mono_buf)
