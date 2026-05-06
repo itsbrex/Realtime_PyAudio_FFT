@@ -101,11 +101,23 @@ class FFTWorker(threading.Thread):
             ws, self.sr, self.n_bins, self.f_min
         )
         # Precompute the divisor (1/count where count>0; 0 elsewhere — empty bins
-        # are overwritten with sentinel below) and the empty-bin mask.
+        # are overwritten with sentinel below) and the empty-bin index. The
+        # cached integer index lets the hot path do a small scatter-assign
+        # instead of full-array .any() + masked write.
         self._bin_count_inv = np.where(self.bin_counts > 0, 1.0 / np.maximum(self.bin_counts, 1.0), 0.0)
         self._bin_empty_mask = self.bin_counts == 0
-        # Preallocated output buffer (float32 wire format).
-        self.bins_f32 = np.zeros(self.n_bins, dtype=np.float32)
+        self._empty_bin_idx = np.flatnonzero(self._bin_empty_mask)
+        self._has_empty_bins = bool(self._empty_bin_idx.size > 0)
+        # Double-buffered f32 wire format. Each hop writes into the back buffer
+        # and publishes that ref. Two-buffer alternation is safe because both
+        # consumers (WS encoder via tobytes, OSC sender via tolist) drain the
+        # array synchronously inside their await point and drop the ref before
+        # we cycle back ~2 hops later.
+        self._bins_f32_buffers = (
+            np.zeros(self.n_bins, dtype=np.float32),
+            np.zeros(self.n_bins, dtype=np.float32),
+        )
+        self._wire_idx = 0
 
     # ------------- live retune from asyncio thread -------------
     def reconfigure(self, n_bins: int | None = None, sr: float | None = None,
@@ -190,18 +202,21 @@ class FFTWorker(threading.Thread):
                 np.maximum(bins, EPS, out=bins)
                 np.log10(bins, out=bins)
                 np.multiply(bins, 10.0, out=bins)
-                # Cast once into the preallocated float32 wire buffer.
-                self.bins_f32[:] = bins
-                if self._bin_empty_mask.any():
-                    self.bins_f32[self._bin_empty_mask] = EMPTY_BIN_SENTINEL
+                # Cast once into the back buffer of the double-buffered wire
+                # output, then patch sentinels via the cached index.
+                bins_f32 = self._bins_f32_buffers[self._wire_idx]
+                bins_f32[:] = bins
+                if self._has_empty_bins:
+                    bins_f32[self._empty_bin_idx] = EMPTY_BIN_SENTINEL
                 # Run the post-processor (if present) and publish both streams.
-                # Both consumers receive fresh arrays so they can safely read
-                # while the next hop is being computed in-place.
+                # Producer-side double-buffering on both streams means the
+                # published refs stay stable across the next hop's writes; no
+                # copies needed on the publish path.
                 processed = None
                 if self.post_processor is not None:
-                    proc_view = self.post_processor.process(self.bins_f32)
-                    processed = np.array(proc_view, copy=True)
-                self.fft_store.publish(self.bins_f32.copy(), processed)
+                    processed = self.post_processor.process(bins_f32)
+                self.fft_store.publish(bins_f32, processed)
+                self._wire_idx ^= 1
                 try:
                     self.on_publish()
                 except Exception as e:

@@ -15,6 +15,10 @@ The browser UI also sends control messages back (toggle FFT, change band crossov
 
 End-to-end input-to-OSC latency target: **8–15 ms**. The audio callback is allocation-free and runs no DSP — all filtering and FFT runs in worker threads. See `realtime_audio_server_plan.md` for the full design.
 
+<p align="center">
+  <img src="assets/architecture_overview.webp" alt="Realtime Audio Server architecture overview" width="95%">
+</p>
+
 ## Setup
 
 Requires Python 3.10+ and PortAudio.

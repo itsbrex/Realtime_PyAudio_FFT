@@ -8,7 +8,6 @@ import numpy as np
 from pythonosc.udp_client import SimpleUDPClient
 
 from ..config import OscDest
-from ..dsp.fft import EMPTY_BIN_SENTINEL
 
 log = logging.getLogger(__name__)
 
@@ -41,11 +40,12 @@ class OscSender:
                 log.debug("osc lmh send failed: %s", e)
 
     def send_fft(self, bins: np.ndarray, db_floor: float) -> None:
-        # OSC 'f' tag is 32-bit float; cast once. Replace the empty-bin sentinel
-        # with db_floor so OSC consumers see a normal in-range value.
-        arr = np.asarray(bins, dtype=np.float32)
-        if (arr <= EMPTY_BIN_SENTINEL * 0.5).any():
-            arr = np.where(arr <= EMPTY_BIN_SENTINEL * 0.5, np.float32(db_floor), arr)
+        # OSC 'f' tag is 32-bit float. The wire array contains -1000 sentinels
+        # for empty log bins; np.maximum clamps both those (and any sub-floor
+        # real values, harmless) to db_floor in a single fused C pass. The
+        # output is a fresh array so we don't mutate the publisher's buffer
+        # (it's still being read by the WS encoder concurrently).
+        arr = np.maximum(bins, np.float32(db_floor))
         payload = arr.tolist()
         for c in self._clients:
             try:

@@ -14,8 +14,12 @@ import numpy as np
 
 
 def block_rms(x: np.ndarray) -> float:
-    """RMS of a 1-D buffer; returns Python float."""
-    return float(np.sqrt(np.mean(np.square(x, dtype=np.float64))))
+    """RMS of a 1-D buffer; returns Python float.
+
+    np.dot(x, x) is a single BLAS sdot/ddot call with no per-block temporary,
+    vs np.square(...) which allocates a length-blocksize array each call.
+    """
+    return math.sqrt(float(np.dot(x, x)) / x.size)
 
 
 class ExpSmoother:
@@ -97,6 +101,7 @@ class AutoScaler:
         self._v = np.zeros(3, dtype=np.float64)         # tilted input
         self._diff = np.zeros(3, dtype=np.float64)      # peak follower delta
         self._alpha = np.zeros(3, dtype=np.float64)     # per-band attack/release
+        self._mask = np.zeros(3, dtype=bool)            # rising-edge mask (preallocated)
         self._scaled = np.zeros(3, dtype=np.float64)    # tanh output
         self._raw = np.zeros(3, dtype=np.float64)       # dB-mapped baseline
         self._peak = np.full(3, max(self.noise_floor, EPS), dtype=np.float64)
@@ -149,16 +154,23 @@ class AutoScaler:
         if not self._warmed:
             self._peak.fill(nf)
             self._warmed = True
+        # Asymmetric one-pole follower, alloc-free: fill alpha with release,
+        # then masked-copy attack into rising bins. _mask, _alpha, _diff are
+        # all preallocated so no per-block temporaries are produced.
         np.subtract(v, self._peak, out=self._diff)
-        rising = self._diff > 0
+        np.greater(self._diff, 0.0, out=self._mask)
         self._alpha.fill(self._a_rel)
-        self._alpha[rising] = self._a_atk
-        self._peak += self._alpha * self._diff
+        np.copyto(self._alpha, self._a_atk, where=self._mask)
+        np.multiply(self._alpha, self._diff, out=self._alpha)
+        np.add(self._peak, self._alpha, out=self._peak)
 
         # tanh compressor: scaled = tanh( max(0, v - nf) / max(peak, nf) )
+        # Repurpose _alpha (no longer needed after the peak update) as the
+        # denominator buffer to avoid the np.maximum(peak, nf) temp.
         np.subtract(v, self.noise_floor, out=self._scaled)
         np.maximum(self._scaled, 0.0, out=self._scaled)
-        np.divide(self._scaled, np.maximum(self._peak, nf), out=self._scaled)
+        np.maximum(self._peak, nf, out=self._alpha)
+        np.divide(self._scaled, self._alpha, out=self._scaled)
         np.tanh(self._scaled, out=self._scaled)
 
         s = self.strength
@@ -167,19 +179,23 @@ class AutoScaler:
             return out
 
         # dB-mapped baseline in [0, 1]; gate-zero below noise floor.
+        # Reuse _mask (preallocated 3-bool) for the below-floor mask.
         span = max(1.0, self.db_ceiling - self.db_floor)
-        below = v < self.noise_floor
+        np.less(v, self.noise_floor, out=self._mask)
         np.maximum(v, EPS, out=self._raw)
         np.log10(self._raw, out=self._raw)
         np.multiply(self._raw, 20.0, out=self._raw)
         np.subtract(self._raw, self.db_floor, out=self._raw)
         np.divide(self._raw, span, out=self._raw)
         np.clip(self._raw, 0.0, 1.0, out=self._raw)
-        self._raw[below] = 0.0
+        self._raw[self._mask] = 0.0
 
         if s <= 0.0:
             np.copyto(out, self._raw)
         else:
+            # Repurpose _diff as scratch for (1-s)*_raw to keep the blend
+            # alloc-free.
             np.multiply(self._scaled, s, out=out)
-            out += (1.0 - s) * self._raw
+            np.multiply(self._raw, 1.0 - s, out=self._diff)
+            np.add(out, self._diff, out=out)
         return out

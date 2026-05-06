@@ -12,6 +12,12 @@ FFT worker thread. Cross-thread mutations go through `update_*` methods
 that take `_lock`; `process()` also takes `_lock`. The lock is held for
 hundreds of µs per hop (n_bins ~128, all-vector ops) and reconfigure
 events are rare.
+
+Output is double-buffered: process() writes into one of two preallocated
+f32 arrays and returns the just-written one, toggling for the next call.
+The returned ref stays valid until two further process() calls; downstream
+consumers (OSC, WS encoder) read the array synchronously and drop the ref
+before then, so no copy is needed on the publish path.
 """
 from __future__ import annotations
 
@@ -28,12 +34,6 @@ EPS = 1e-12
 # tilt in the middle of the musical range — bins below are pulled down, bins
 # above are pushed up — so a single global noise gate fires uniformly.
 TILT_REF_HZ = 1000.0
-
-# When `peak_smear_oct` is large relative to the spectrum width, the per-bin
-# kernel mass `_smear_norm` near the edges can be tiny; dividing by it to
-# normalise edge bins amplifies numerical noise into spurious peaks. Floor
-# the divisor at this fraction of the kernel's centre mass.
-SMEAR_NORM_MIN = 0.1
 
 
 class FFTPostProcessor:
@@ -69,18 +69,33 @@ class FFTPostProcessor:
         self.peak_lin = np.full(n, max(self.noise_floor, EPS), dtype=np.float64)
         self.peak_smoothed = np.full(n, max(self.noise_floor, EPS), dtype=np.float64)
         self.interp_db = np.zeros(n, dtype=np.float64)
-        self.processed = np.zeros(n, dtype=np.float32)
+        # Double-buffered f32 output. process() writes into one buffer, returns
+        # the ref, and toggles. Caller may read the returned ref until the
+        # next-next process() call (two hops later) without copying. Single
+        # producer + asyncio readers that drop the ref synchronously after
+        # encoding makes this race-free.
+        self._processed_buffers = (
+            np.zeros(n, dtype=np.float32),
+            np.zeros(n, dtype=np.float32),
+        )
+        self._proc_idx = 0
         # scratch (float64), repurposed across pipeline stages
         self._lin = np.zeros(n, dtype=np.float64)
         self._diff = np.zeros(n, dtype=np.float64)
         self._alpha = np.zeros(n, dtype=np.float64)
         self._scratch = np.zeros(n, dtype=np.float64)
         self._mask = np.zeros(n, dtype=bool)
-        self._x = np.arange(n, dtype=np.float64)
-        # cached on first hop (bin layout is stable until reconfigure)
-        self._vi: np.ndarray | None = None         # int valid indices
-        self._vi_x: np.ndarray | None = None       # float64 view of _vi for np.interp
-        self._vi_db: np.ndarray | None = None      # float64 buffer for db_in[_vi]
+        # Sentinel-fill LUT, built lazily on the first hop (post-processor
+        # doesn't see the bin layout until it gets a real frame). Bin layout
+        # is stable until reconfigure(), so the LUT is rebuilt once per
+        # reconfigure and the hot path is alloc-free thereafter.
+        self._empty_idx: np.ndarray | None = None
+        self._left_idx: np.ndarray | None = None
+        self._right_idx: np.ndarray | None = None
+        self._w_left: np.ndarray | None = None
+        self._w_right: np.ndarray | None = None
+        self._left_vals: np.ndarray | None = None
+        self._right_vals: np.ndarray | None = None
         self.tau_per_bin = self._build_per_bin_tau()
         self.tilt_db = self._build_tilt_db()
         self._recompute_alphas()
@@ -97,28 +112,77 @@ class FFTPostProcessor:
         f_center = np.power(10.0, log_f)
         return (self.tilt_db_per_oct * np.log2(f_center / TILT_REF_HZ)).astype(np.float64)
 
+    def _build_sentinel_interp_lut(self, db_in: np.ndarray) -> None:
+        """Detect empty-bin positions (sentinel = -1000 dB) and precompute a
+        linear-interpolation LUT (left/right valid-neighbor source indices
+        and per-empty-bin weights) so the hot path can fill sentinels with
+        a fancy-take + multiply-add + fancy-scatter, no `np.interp` call
+        and no per-hop temporaries.
+
+        Edge handling: empty bins below the lowest valid bin take the
+        rightmost valid neighbor's value (w_left=0); empty bins above the
+        highest valid bin take the leftmost valid neighbor's value
+        (w_right=0). If all bins are valid, the LUT is empty and the hot
+        path skips the fill entirely.
+        """
+        valid_mask = db_in >= -500.0   # sentinel is -1000; real values >= db_floor
+        valid_idx = np.flatnonzero(valid_mask)
+        empty_idx = np.flatnonzero(~valid_mask)
+
+        if empty_idx.size == 0 or valid_idx.size == 0:
+            self._empty_idx = np.zeros(0, dtype=np.intp)
+            self._left_idx = np.zeros(0, dtype=np.intp)
+            self._right_idx = np.zeros(0, dtype=np.intp)
+            self._w_left = np.zeros(0, dtype=np.float64)
+            self._w_right = np.zeros(0, dtype=np.float64)
+            self._left_vals = np.zeros(0, dtype=np.float64)
+            self._right_vals = np.zeros(0, dtype=np.float64)
+            return
+
+        # right_pos = leftmost index in valid_idx whose value is >= empty_idx[k].
+        # left_pos = right_pos - 1. May be out of range at the spectrum edges.
+        right_pos = np.searchsorted(valid_idx, empty_idx, side="left")
+        left_pos = right_pos - 1
+        has_left = left_pos >= 0
+        has_right = right_pos < valid_idx.size
+        left_pos_safe = np.where(has_left, left_pos, 0)
+        right_pos_safe = np.where(has_right, right_pos, valid_idx.size - 1)
+        L = valid_idx[left_pos_safe]
+        R = valid_idx[right_pos_safe]
+
+        span = (R - L).astype(np.float64)
+        safe_span = np.where(span > 0, span, 1.0)
+        w_left_default = (R - empty_idx) / safe_span
+        # has_left & has_right → linear blend; only-left → w_left=1; only-right → w_left=0.
+        w_left = np.where(
+            has_left & has_right, w_left_default,
+            np.where(has_left, 1.0, 0.0),
+        )
+
+        self._empty_idx = empty_idx.astype(np.intp)
+        self._left_idx = L.astype(np.intp)
+        self._right_idx = R.astype(np.intp)
+        self._w_left = w_left.astype(np.float64)
+        self._w_right = (1.0 - w_left).astype(np.float64)
+        self._left_vals = np.zeros(empty_idx.size, dtype=np.float64)
+        self._right_vals = np.zeros(empty_idx.size, dtype=np.float64)
+
     def _recompute_smear(self) -> None:
-        """Convert peak_smear_oct → Gaussian sigma in *bin index* units, plus
-        the per-bin edge-normalisation weights (clamped at SMEAR_NORM_MIN of
-        the centre mass to avoid amplifying noise in low-mass edge bins).
+        """Convert peak_smear_oct → Gaussian sigma in *bin index* units.
+
+        The smear in process() uses mode='reflect', which is self-normalising
+        at the edges (mirror-padded neighbours have the same kernel mass as
+        the interior), so no per-bin normalisation weights are needed.
         """
         if self.peak_smear_oct <= 0.0:
             self._smear_sigma_bins = 0.0
-            self._smear_norm_clamped = None
             return
         f_max = self.sr / 2.0
         if f_max <= self.f_min:
             self._smear_sigma_bins = 0.0
-            self._smear_norm_clamped = None
             return
         bins_per_octave = self.n_bins / max(1e-6, math.log2(f_max / self.f_min))
         self._smear_sigma_bins = float(self.peak_smear_oct * bins_per_octave)
-        ones = np.ones(self.n_bins, dtype=np.float64)
-        smear_norm = gaussian_filter1d(
-            ones, sigma=self._smear_sigma_bins, mode="constant", cval=0.0
-        )
-        floor_val = SMEAR_NORM_MIN * float(np.max(smear_norm))
-        self._smear_norm_clamped = np.maximum(smear_norm, floor_val)
 
     def _build_per_bin_tau(self) -> np.ndarray:
         anchors = []
@@ -203,31 +267,36 @@ class FFTPostProcessor:
     # ----------------- hot path (FFT worker thread) -----------------
     def process(self, db_in: np.ndarray) -> np.ndarray:
         """Run the pipeline on `db_in` (float32, length n_bins, raw wire dB
-        with -1000 sentinels for empty log bins). Returns the float32
-        `processed` array (in [0, 1]). Caller must copy before mutating.
+        with -1000 sentinels for empty log bins). Returns a float32 view of
+        the just-written output buffer (in [0, 1]).
+
+        The output is one of two preallocated buffers — the returned ref is
+        valid until two subsequent process() calls. Don't keep it longer.
         """
         with self._lock:
-            n = self.n_bins
+            # Pick the back buffer (the one not last published). Toggle at end.
+            out = self._processed_buffers[self._proc_idx]
 
-            # 1. Sentinel interpolation. Bin layout is stable until reconfigure,
-            #    so cache the valid-index array on first hop.
-            if self._vi is None:
-                vi = np.where(db_in >= -500.0)[0]
-                self._vi = vi
-                self._vi_x = vi.astype(np.float64)
-                # Match db_in's dtype so np.take with out= passes the safe-cast rule.
-                self._vi_db = np.empty(vi.shape[0], dtype=db_in.dtype)
-            vi = self._vi
-            if vi.size == 0:
-                self.interp_db.fill(-120.0)
-            elif vi.size == n:
-                self.interp_db[:] = db_in   # fast f32→f64 copy, no gaps
-            else:
-                np.take(db_in, vi, out=self._vi_db)
-                self.interp_db[:] = np.interp(self._x, self._vi_x, self._vi_db)
+            # 1. Sentinel interpolation. Empty bins arrive as -1000 dB and
+            #    must be filled with values consistent with their valid
+            #    neighbors — clamping to db_floor leaves visible gaps in the
+            #    spectrum at the low end (where consecutive log bins are
+            #    empty because rfft Δf > log-bin width). Use a precomputed
+            #    LUT (built once per bin layout) for an alloc-free linear
+            #    blend of the left/right valid neighbors.
+            self.interp_db[:] = db_in   # f32 → f64
+            if self._empty_idx is None:
+                self._build_sentinel_interp_lut(db_in)
+            if self._empty_idx.size > 0:
+                np.take(self.interp_db, self._left_idx, out=self._left_vals)
+                np.take(self.interp_db, self._right_idx, out=self._right_vals)
+                np.multiply(self._left_vals, self._w_left, out=self._left_vals)
+                np.multiply(self._right_vals, self._w_right, out=self._right_vals)
+                np.add(self._left_vals, self._right_vals, out=self._left_vals)
+                self.interp_db[self._empty_idx] = self._left_vals
 
             # 2. Pre-tilt (in dB) + dB→linear into _lin.
-            #    interp_db is the UNTILTED raw spectrum and is reused below
+            #    interp_db is the UNTILTED clamped spectrum and is reused below
             #    for the strength<1 baseline; do not mutate it.
             np.add(self.interp_db, self.tilt_db, out=self._lin)
             np.multiply(self._lin, 1.0 / 20.0, out=self._lin)
@@ -248,20 +317,23 @@ class FFTPostProcessor:
                 np.add(self.smooth_lin, self._diff, out=self.smooth_lin)
 
             # 4. Asymmetric peak follower (in-place, preallocated buffers).
+            #    fill+masked-copy is alloc-free because _mask is preallocated;
+            #    np.where(...) would otherwise allocate a fresh result each
+            #    call (no out= support).
             np.subtract(self.smooth_lin, self.peak_lin, out=self._diff)
             np.greater(self._diff, 0.0, out=self._mask)
             self._alpha.fill(self.alpha_release)
-            self._alpha[self._mask] = self.alpha_attack
+            np.copyto(self._alpha, self.alpha_attack, where=self._mask)
             np.multiply(self._diff, self._alpha, out=self._diff)
             np.add(self.peak_lin, self._diff, out=self.peak_lin)
 
             # 4b. Spatial Gaussian smear of the peak across log-frequency bins.
+            #     mode='reflect' is self-normalising at the edges (mirrored
+            #     neighbours carry the same kernel mass), so no normalisation
+            #     divide is needed.
             if self._smear_sigma_bins > 0.0:
                 gaussian_filter1d(self.peak_lin, sigma=self._smear_sigma_bins,
-                                  output=self.peak_smoothed, mode="constant",
-                                  cval=0.0)
-                np.divide(self.peak_smoothed, self._smear_norm_clamped,
-                          out=self.peak_smoothed)
+                                  output=self.peak_smoothed, mode="reflect")
             else:
                 np.copyto(self.peak_smoothed, self.peak_lin)
 
@@ -277,8 +349,9 @@ class FFTPostProcessor:
             # 6. Strength blend.
             s = self.strength
             if s >= 1.0:
-                self.processed[:] = self._diff   # f64 → f32
-                return self.processed
+                out[:] = self._diff   # f64 → f32
+                self._proc_idx ^= 1
+                return out
 
             # Raw dB-mapped baseline from UNTILTED interp_db, [0, 1]; gate-zero
             # bins whose untilted value is below the noise gate.
@@ -295,5 +368,6 @@ class FFTPostProcessor:
             np.multiply(self._diff, s, out=self._diff)
             np.multiply(self._scratch, 1.0 - s, out=self._scratch)
             np.add(self._diff, self._scratch, out=self._diff)
-            self.processed[:] = self._diff
-            return self.processed
+            out[:] = self._diff
+            self._proc_idx ^= 1
+            return out

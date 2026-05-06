@@ -21,7 +21,7 @@ dsp:
 autoscale:
   tau_attack_s: 0.23980228135543274
   tau_release_s: 60.0
-  noise_floor: 0.0005359374999999998
+  noise_floor: 0.0005545232999999999
   strength: 1.0
 fft:
   enabled: true
@@ -46,4 +46,4 @@ ws:
   snapshot_hz: 60
   http_port: 8766
 ui:
-  peak_decay_per_s: 0.3
+  peak_decay_per_s: 0.6
