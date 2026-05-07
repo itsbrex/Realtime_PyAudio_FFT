@@ -19,6 +19,7 @@ import webbrowser
 from pathlib import Path
 
 import numpy as np
+import sounddevice as sd
 
 from .audio import devices as devmod
 from .audio.callback import AudioCallback
@@ -805,6 +806,13 @@ def main(argv=None):
         asyncio.run(_run(args, cfg, config_path))
     except KeyboardInterrupt:
         pass
+    except sd.PortAudioError as e:
+        log.warning(
+            "no usable audio input device (%s) — audio-server exiting cleanly; "
+            "plug in a mic and restart, or pick a device in the UI",
+            e,
+        )
+        return 0
     return 0
 
 
