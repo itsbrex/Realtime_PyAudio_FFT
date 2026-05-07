@@ -1,7 +1,5 @@
-<p align="center">
-  <video src="assets/demo.mp4" width="95%" controls muted autoplay loop playsinline>
-    Your browser does not support the video tag. <a href="assets/demo.mp4">Download the demo</a>.
-  </video>
+<p align="center" width="100%">
+<video src="https://github.com/aiXander/Realtime_PyAudio_FFT/raw/master/assets/demo.mp4" width="80%" controls></video>
 </p>
 
 # Realtime Audio Feature Server
