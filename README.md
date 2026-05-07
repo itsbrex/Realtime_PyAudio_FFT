@@ -2,74 +2,108 @@
 
 https://github.com/user-attachments/assets/83547924-0b8d-4667-ba55-5cb813fdc09d
 
-A highly optimized, minimal latency, localhost Python server that captures live audio (mic, line-in, soundcard, loopback device, ...), and computes:
-- perceptually-tuned **low / mid / high** band energies and 
-- an optional **128-bin log-spaced FFT spectrum**
+A low-latency localhost server that captures live audio (microphone, line-in,
+soundcard, or loopback device) and streams perceptually-tuned audio features
+to any app that wants to react to sound — VJ tools, game engines, creative
+coding sketches, custom scripts.
 
-The server publishes these features to:
+It computes two things:
 
-- **External apps over OSC/UDP** (TouchDesigner, Max/MSP, Unity, custom scripts) — every audio block (~187 Hz at 48 kHz / 256 samples).
-- **A browser visualizer over WebSocket** — coalesced to ~60 Hz, plus a binary FFT frame.
+- **Low / mid / high band energies** — three independent IIR bandpasses, each
+  cleaned and auto-scaled into a clean `[0, 1]` signal.
+- **128-bin log-spaced FFT spectrum** *(optional)* — windowed rFFT routed
+  through the same auto-scaler pipeline.
 
----
+These features are published to:
 
-**The browser is a thin renderer.** All signal post-processing (smoothing, peak normalization, gating, tanh compression, strength blending, spatial peak smearing) runs server-side, in the same code path that feeds OSC. So **what you see in the FFT graph is byte-identical to the `/audio/fft` OSC payload** — you can tune every knob from the UI and trust the picture matches what downstream apps receive.
+- **OSC over UDP** — TouchDesigner, Max/MSP, Unity, p5.js, custom receivers.
+  Every audio block (~187 Hz at 48 kHz / 256 samples).
+- **WebSocket** — full-duplex JSON + a binary FFT toggle, used by the bundled
+  browser UI and any client that wants to change settings at runtime.
 
-The browser UI also sends control messages back (toggle FFT, change band crossovers, switch input device, change smoothing, save/load presets). All settings persist to `configs/main.yaml`, so the server boots back into the last-used state.
-
-End-to-end input-to-OSC latency target: **8–15 ms**. The audio callback is allocation-free and runs no DSP — all filtering and FFT runs in worker threads. See `realtime_audio_server_plan.md` for the full design.
+End-to-end input-to-OSC latency target: **8–15 ms**. The PortAudio callback
+is allocation-free and runs zero DSP — every filter, FFT, and smoother runs
+in worker threads using vectorized NumPy / SciPy paths that drop into
+optimized C, so the realtime path stays fast, even under load. The server runs on 
+a Raspberry Pi without a sweat.
 
 <p align="center">
   <img src="assets/architecture_overview.webp" alt="Realtime Audio Server architecture overview" width="95%">
 </p>
 
+> **The browser is a thin renderer.** All signal processing — smoothing,
+> peak normalization, gating, tanh compression, strength blending, spatial
+> peak smearing — happens server-side, in the same code path that feeds OSC.
+> What you see in the FFT graph is byte-identical to the `/audio/fft` OSC
+> payload, so you can tune every knob from the UI and trust the picture
+> matches what downstream apps receive.
+
+The browser UI also sends control messages back (toggle FFT, change band
+crossovers, switch input device, change smoothing, save/load presets). All
+settings persist to `configs/main.yaml`, so the server boots back into the
+last-used state.
+
+See `realtime_audio_server_plan.md` for the full design spec.
+
+---
+
 ## Setup
 
 Requires Python 3.10+ and PortAudio.
+
+**1. Install PortAudio**
 
 ```bash
 # macOS
 brew install portaudio
 
-# Ubuntu/Debian
+# Ubuntu / Debian
 sudo apt install libportaudio2 portaudio19-dev
 ```
 
-Then, from the repo root:
+**2. Install the server (from the repo root)**
+
+Uses [minimal dependencies](pyproject.toml), should be safe to install anywhere.
 
 ```bash
 pip install -e ".[dev]"
 ```
 
 ## Run
-python -m server.main --open
 
 ```bash
-audio-server                  # reads ./configs/main.yaml, opens WS on 8765, UI on 8766
-audio-server --open           # also opens the UI in your default browser
-audio-server --no-ws          # headless OSC-only mode
-audio-server --device 2       # override input device by index
+audio-server                    # reads ./configs/main.yaml, opens WS on 8765, UI on 8766
+audio-server --open             # also opens the UI in your default browser
+audio-server --no-ws            # headless OSC-only mode
 audio-server --config /path/to/cfg.yaml --log-level DEBUG
 ```
 
-Equivalent to: `python -m server.main`.
+Equivalent to `python -m server.main`.
 
-The browser UI is at **http://127.0.0.1:8766** once the server is running. (Don't open `ui/index.html` directly with `file://` — ES modules won't load.)
+The browser UI is available at **http://127.0.0.1:8766** once the server
+is running. Don't open `ui/index.html` directly with `file://` — ES modules
+won't load.
 
 ---
 
-## Integration guide (for external apps / coding agents)
+## Integration Guide
 
-This server is designed to be a feature provider for other projects. There are two ways to integrate, and they can be used together:
+This server is designed to be a feature provider for other projects. There
+are two integration paths, and they can be used together:
 
-1. **OSC/UDP** — the "subscribe-only" path for realtime audio features (TouchDesigner, Max/MSP, Unity, p5.js, custom Python/JS apps). Lowest latency, every audio block.
-2. **WebSocket** — full-duplex JSON + binary protocol used by the browser UI. Use this if you want to **change settings at runtime** (toggle FFT, switch input device, retune bands, save/load presets) or if you want **a richer feature payload** than OSC carries.
+| Path | Direction | Best for |
+|------|-----------|----------|
+| **OSC / UDP** | server → clients | Lowest latency, every audio block. TouchDesigner, Max/MSP, Unity, p5.js, custom receivers. |
+| **WebSocket** | full-duplex | Runtime control (toggle FFT, switch device, retune bands, save/load presets) and richer feature payloads. |
 
-The server can run with both enabled (default), or in OSC-only headless mode (`--no-ws`).
+The server can run with both enabled (default), or in OSC-only headless
+mode (`--no-ws`).
 
 ### 1. Listening for audio features over OSC
 
-OSC is sent to every destination listed under `osc.destinations` in `configs/main.yaml`. Default is `127.0.0.1:9000`. Add more (or change the port) by editing the YAML and restarting:
+OSC is sent to every destination listed under `osc.destinations` in
+`configs/main.yaml`. Default is `127.0.0.1:9000`. Add more (or change the
+port) by editing the YAML and restarting:
 
 ```yaml
 osc:
@@ -79,17 +113,17 @@ osc:
   send_fft: false              # set true to also stream /audio/fft
 ```
 
-**Messages emitted:**
+#### Messages emitted
 
 | Address      | Args                                                                                                       | Rate                                  | Notes                                                                                                       |
 |--------------|------------------------------------------------------------------------------------------------------------|---------------------------------------|-------------------------------------------------------------------------------------------------------------|
 | `/audio/meta`| `sr:i  blocksize:i  n_fft_bins:i  low_lo:f low_hi:f  mid_lo:f mid_hi:f  high_lo:f high_hi:f`               | Once at startup, again on device/FFT/cutoff change | Three independent bandpass edges (Hz). Use this to size your spectrum buffer and learn the actual sample rate the device opened at. |
 | `/audio/lmh` | `low:f  mid:f  high:f`                                                                                     | Every audio block (~187 Hz @ 48k/256) | **Auto-scaled to ~[0, 1]** (peak follower + soft noise gate + tanh). These are the values VJ tools want.    |
-| `/audio/fft` | `bin_0:f  bin_1:f  …  bin_{N-1}:f`                                                                         | Every FFT hop (~94 Hz @ hop=512/48k)  | Only sent when **both** `fft.enabled: true` **and** `osc.send_fft: true`. **Default: post-processed `[0, 1]`** (per-bin port of the L/M/H pipeline — same VJ-friendly semantics). Set `fft.send_raw_db: true` to ship raw dB instead. |
+| `/audio/fft` | `bin_0:f  bin_1:f  …  bin_{N-1}:f`                                                                         | Every FFT hop (~94 Hz @ hop=512/48k)  | Only sent when **both** `fft.enabled: true` **and** `osc.send_fft: true`. Default: post-processed `[0, 1]` (per-bin port of the L/M/H pipeline — same VJ-friendly semantics). Set `fft.send_raw_db: true` to ship raw dB instead. |
 
 All floats are 32-bit. OSC addresses are flat (no nesting).
 
-**Minimal Python receiver:**
+#### Minimal Python receiver
 
 ```python
 from pythonosc import dispatcher, osc_server
@@ -109,16 +143,33 @@ d.map("/audio/fft", lambda _addr, *bins: None)   # n_fft_bins floats
 osc_server.BlockingOSCUDPServer(("127.0.0.1", 9000), d).serve_forever()
 ```
 
-**TouchDesigner / Max:** point an OSC In CHOP / `udpreceive` at port 9000. Each `/audio/lmh` message arrives as three channels.
+**TouchDesigner / Max:** point an OSC In CHOP / `udpreceive` at port 9000.
+Each `/audio/lmh` message arrives as three channels.
 
-**Notes:**
-- L/M/H over OSC is the **post-autoscale** value in `~[0, 1]`. Pre-autoscale (raw smoothed RMS) is only available over WebSocket (`low_raw/mid_raw/high_raw` in the snapshot message). A `/audio/lmh_raw` channel is on the v1.1 list.
-- FFT bins over OSC default to **post-processed `[0, 1]` floats** — same per-bin auto-scaler pipeline used for L/M/H, just per FFT bin instead of per band. So the FFT and L/M/H feeds share the same scale and gate semantics out of the box. To get the raw dB log spectrum instead (e.g. for a meter or analyzer), flip `fft.send_raw_db: true` in `configs/main.yaml` (or send `set_fft_send_raw_db` over WS, or toggle the "raw dB" checkbox in the UI). The same flag controls the WS binary frame's contents, so the UI viz always matches what's on the OSC wire.
-- The FFT stream is gated by **two** flags: `fft.enabled` (turns the worker on) and `osc.send_fft` (decides whether to ship FFT bins to OSC consumers in addition to the WS client). You can have FFT enabled for the browser but skipped on OSC if you don't need it there.
+#### Notes
+
+- L/M/H over OSC is the **post-autoscale** value in `~[0, 1]`. Pre-autoscale
+  (raw smoothed RMS) is only available over WebSocket
+  (`low_raw / mid_raw / high_raw` in the snapshot message). A
+  `/audio/lmh_raw` channel is on the v1.1 list.
+- FFT bins over OSC default to **post-processed `[0, 1]` floats** — same
+  per-bin auto-scaler pipeline used for L/M/H, just per FFT bin instead of
+  per band. So the FFT and L/M/H feeds share the same scale and gate
+  semantics out of the box. To get the raw dB log spectrum instead (e.g.
+  for a meter or analyzer), flip `fft.send_raw_db: true` in
+  `configs/main.yaml` (or send `set_fft_send_raw_db` over WS, or toggle the
+  "raw dB" checkbox in the UI). The same flag controls the WS binary
+  frame's contents, so the UI viz always matches what's on the OSC wire.
+- The FFT stream is gated by **two** flags: `fft.enabled` (turns the worker
+  on) and `osc.send_fft` (decides whether to ship FFT bins to OSC consumers
+  in addition to the WS client). You can have FFT enabled for the browser
+  but skipped on OSC if you don't need it there.
 
 ### 2. Controlling the server over WebSocket
 
-Connect to `ws://127.0.0.1:8765`. The server speaks JSON in both directions, plus binary frames for FFT data. **One** WebSocket carries control messages and data; multiple clients can connect simultaneously.
+Connect to `ws://127.0.0.1:8765`. The server speaks JSON in both directions,
+plus binary frames for FFT data. **One** WebSocket carries control messages
+and data; multiple clients can connect simultaneously.
 
 #### Outbound (server → client)
 
@@ -136,7 +187,8 @@ Text frames, JSON-encoded. `type` discriminates the message:
 
 #### Inbound (client → server)
 
-Text frames, JSON. Validation runs before any mutation; on failure you get an `error` reply and **state is unchanged**.
+Text frames, JSON. Validation runs before any mutation; on failure you get
+an `error` reply and **state is unchanged**.
 
 | `type`                | Required fields                                                                                  | Notes                                                                                                                            |
 |-----------------------|--------------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------|
@@ -154,7 +206,11 @@ Text frames, JSON. Validation runs before any mutation; on failure you get an `e
 | `save_preset`         | `name: string`                                                                                   | Name `1–64` chars, `[A-Za-z0-9_\- ]` only. Snapshots DSP / autoscale / FFT view into `<config_dir>/preset-<name>.yaml`.           |
 | `load_preset`         | `name: string`                                                                                   | Validates each field, applies via the same handlers a slider would, then persists the resulting state to `configs/main.yaml`.          |
 
-**Drag-aware persistence.** Sliders should send `commit: false` while dragging and `commit: true` on release. The audio mutation is applied immediately either way; only the YAML write is debounced (1 s during drag, 50 ms on commit, capped at 250 ms wall-clock from the first dirty change).
+> **Drag-aware persistence.** Sliders should send `commit: false` while
+> dragging and `commit: true` on release. The audio mutation is applied
+> immediately either way; only the YAML write is debounced (1 s during
+> drag, 50 ms on commit, capped at 250 ms wall-clock from the first dirty
+> change).
 
 #### Minimal JS client
 
@@ -207,34 +263,101 @@ async def main():
 asyncio.run(main())
 ```
 
-### 3. Tuning L/M/H by watching the FFT
+---
 
-The L/M/H pipeline (per-band IIR bandpass → RMS → smoother → auto-scaler) and the FFT post-processor share the same control knobs:
+## Tuning L/M/H by watching the FFT
 
-- **`set_smoothing`** drives both the L/M/H exponential smoother AND the FFT per-bin smoother. The FFT bin τ is piecewise-linearly interpolated in log-frequency from the L/M/H band geometric-mean centers (so dragging the "low" τ lazes out the bass FFT bins, the "mid" τ the midrange bins, etc.).
-- **`set_autoscale`** drives both the L/M/H `AutoScaler` and the FFT per-bin peak follower (same attack/release/floor/strength).
-- **`set_band`** moves the IIR bandpass edges AND re-anchors the FFT smoothing-τ interpolation onto the new band centers AND retunes the L/M/H bandwidth-aware noise gate (see below).
+The L/M/H pipeline (per-band IIR bandpass → RMS → smoother → auto-scaler)
+and the FFT post-processor share the same control knobs:
 
-So the FFT visualizer is more than a spectrum — it's a continuous, high-resolution preview of what every L/M/H knob is doing. Tune until the FFT viz looks the way you want, and the L/M/H output going to OSC will follow the same response shape.
+- **`set_smoothing`** drives both the L/M/H exponential smoother AND the
+  FFT per-bin smoother. The FFT bin τ is piecewise-linearly interpolated
+  in log-frequency from the L/M/H band geometric-mean centers (so dragging
+  the "low" τ lazes out the bass FFT bins, the "mid" τ the midrange bins,
+  etc.).
+- **`set_autoscale`** drives both the L/M/H `AutoScaler` and the FFT
+  per-bin peak follower (same attack/release/floor/strength).
+- **`set_band`** moves the IIR bandpass edges AND re-anchors the FFT
+  smoothing-τ interpolation onto the new band centers AND retunes the
+  L/M/H bandwidth-aware noise gate (see below).
 
-**One-knob noise floor across both pipelines.** The FFT viz gates per-bin (bins below `noise_floor` go to 0). L/M/H, by contrast, integrates total power across the band — so without correction, widening a band would integrate more sub-floor noise and make L/M/H read higher even when the FFT viz looks empty in that range. To keep `noise_floor` coherent across both, the L/M/H `AutoScaler` subtracts a per-band noise budget before its gate: `clean_rms² = max(0, rms² − noise_floor² · n_bins_eff)` where `n_bins_eff = max(1, K_lin / N_log)` is the average count of linear rfft bins per FFT-viz log bin in that band — i.e. "one log bin's worth of floor noise". This is exactly the threshold the FFT viz's per-bin gate uses, so any single log bin visible on the FFT contributes ≥ this much to integrated band power and survives. (Subtracting the full `K_lin · noise_floor²` instead — the broadband-at-floor budget — would over-penalize narrowband content in wide bands by ~`N_log` and kill snare hits that show clearly on the FFT spectrum.) Tuning `noise_floor` against the FFT viz now gates the L/M/H consistently with what you see. (Recomputed automatically when bands, the noise floor, the FFT geometry — `n_bins`, `f_min`, `window_size` — or sample rate change.)
+So the FFT visualizer is more than a spectrum — it's a continuous,
+high-resolution preview of what every L/M/H knob is doing. Tune until the
+FFT viz looks the way you want, and the L/M/H output going to OSC will
+follow the same response shape.
 
-**Raw mode (strength<1) reads the same dB as the FFT viz.** With `strength=0` the L/M/H output is an "honest dB readout" of the band content. To make this read the same as the FFT viz over the same frequency range, the baseline is computed two ways that mirror the FFT post-processor: it's **untilted** (the auto-scaler's spectral tilt is for normalization, not honest dB) and expressed as **per-rfft-bin equivalent amplitude** (`rms_band / sqrt(K_lin)`). The latter cancels the bandwidth integration — without it, the high band would inflate by ~+24 dB vs an FFT log bin in the same range. Result: in silence, both views agree (low-frequency room rumble shows on L *and* the low FFT bins; quiet mid/high shows zero in both). The auto-scaled path (`strength=1`, default for VJ tools) still uses tilted RMS internally — that's how the auto-scaler equalizes spectral response.
+#### One-knob noise floor across both pipelines
 
-The two FFT-specific knobs that don't have an L/M/H equivalent:
+The FFT viz gates per-bin (bins below `noise_floor` go to 0). L/M/H, by
+contrast, integrates total power across the band — so without correction,
+widening a band would integrate more sub-floor noise and make L/M/H read
+higher even when the FFT viz looks empty in that range. To keep
+`noise_floor` coherent across both, the L/M/H `AutoScaler` subtracts a
+per-band noise budget before its gate:
 
-- **`fft.send_raw_db`** — selects the wire format. `false` (default): post-processed `[0, 1]`. `true`: raw dB log spectrum. Toggling switches both the OSC payload and the UI viz simultaneously.
-- **`fft.peak_smear_oct`** — Gaussian smear (in octaves) of the per-bin peak follower. Without it, a sustained single-frequency tone drives ITS bin's peak high enough to fully self-normalize, so the tone bin reads *smaller* than its quiet neighbors. Smearing the peak across log-frequency neighbors keeps the local frequency contour intact while still flattening the long-term spectral envelope. Has no L/M/H equivalent because L/M/H has no spectral neighborhood.
+```
+clean_rms² = max(0, rms² − noise_floor² · n_bins_eff)
+```
 
-### 4. Toggling FFT from outside the UI
+where `n_bins_eff = max(1, K_lin / N_log)` is the average count of linear
+rfft bins per FFT-viz log bin in that band — i.e. *one log bin's worth of
+floor noise*. This is exactly the threshold the FFT viz's per-bin gate
+uses, so any single log bin visible on the FFT contributes ≥ this much to
+integrated band power and survives. (Subtracting the full
+`K_lin · noise_floor²` instead — the broadband-at-floor budget — would
+over-penalize narrowband content in wide bands by ~`N_log` and kill snare
+hits that show clearly on the FFT spectrum.) Tuning `noise_floor` against
+the FFT viz now gates the L/M/H consistently with what you see.
+(Recomputed automatically when bands, the noise floor, the FFT geometry —
+`n_bins`, `f_min`, `window_size` — or sample rate change.)
+
+#### Raw mode (`strength<1`) reads the same dB as the FFT viz
+
+With `strength=0` the L/M/H output is an "honest dB readout" of the band
+content. To make this read the same as the FFT viz over the same frequency
+range, the baseline is computed two ways that mirror the FFT
+post-processor: it's **untilted** (the auto-scaler's spectral tilt is for
+normalization, not honest dB) and expressed as **per-rfft-bin equivalent
+amplitude** (`rms_band / sqrt(K_lin)`). The latter cancels the bandwidth
+integration — without it, the high band would inflate by ~+24 dB vs an FFT
+log bin in the same range. Result: in silence, both views agree
+(low-frequency room rumble shows on L *and* the low FFT bins; quiet
+mid/high shows zero in both). The auto-scaled path (`strength=1`, default
+for VJ tools) still uses tilted RMS internally — that's how the
+auto-scaler equalizes spectral response.
+
+#### FFT-specific knobs
+
+These two knobs have no L/M/H equivalent:
+
+- **`fft.send_raw_db`** — selects the wire format. `false` (default):
+  post-processed `[0, 1]`. `true`: raw dB log spectrum. Toggling switches
+  both the OSC payload and the UI viz simultaneously.
+- **`fft.peak_smear_oct`** — Gaussian smear (in octaves) of the per-bin
+  peak follower. Without it, a sustained single-frequency tone drives
+  *its* bin's peak high enough to fully self-normalize, so the tone bin
+  reads *smaller* than its quiet neighbors. Smearing the peak across
+  log-frequency neighbors keeps the local frequency contour intact while
+  still flattening the long-term spectral envelope. No L/M/H equivalent
+  because L/M/H has no spectral neighborhood.
+
+---
+
+## Common Tasks
+
+### Toggling FFT from outside the UI
 
 Three equivalent ways, depending on what you have:
 
 - **WebSocket:** send `{"type": "set_fft", "enabled": true}`.
-- **Edit `configs/main.yaml`:** set `fft.enabled: true` and restart the server. (Live edits to `configs/main.yaml` are not picked up — the server *writes* the file but does not watch it.)
-- **For OSC consumers:** also set `osc.send_fft: true` in `configs/main.yaml`, otherwise FFT bins won't be sent over OSC even when the worker is on.
+- **Edit `configs/main.yaml`:** set `fft.enabled: true` and restart the
+  server. (Live edits to `configs/main.yaml` are not picked up — the
+  server *writes* the file but does not watch it.)
+- **For OSC consumers:** also set `osc.send_fft: true` in
+  `configs/main.yaml`, otherwise FFT bins won't be sent over OSC even when
+  the worker is on.
 
-### 5. Picking the input device
+### Picking the input device
 
 Either set it in `configs/main.yaml`:
 
@@ -243,21 +366,30 @@ audio:
   device: { name: "BlackHole 2ch", index: 3 }   # name preferred, index advisory
 ```
 
-…or pass `--device <index>` on startup, or send `{"type": "set_device", "index": N}` over WS at runtime. To enumerate, send `{"type": "list_devices", "probe": true}` and read the `devices` reply.
+…or pass `--device <index>` on startup, or send
+`{"type": "set_device", "index": N}` over WS at runtime. To enumerate, send
+`{"type": "list_devices", "probe": true}` and read the `devices` reply.
 
-For multichannel pro interfaces / aggregate devices where channel 0/1 isn't the stereo pair you want, use `sounddevice`'s device mapping rather than relying on the auto stereo mono-mix.
+For multichannel pro interfaces / aggregate devices where channel 0/1 isn't
+the stereo pair you want, use `sounddevice`'s device mapping rather than
+relying on the auto stereo mono-mix.
 
-### 6. Headless / OSC-only deployments
+### Headless / OSC-only deployments
 
-If you don't need the browser UI or runtime control:
+If you don't need the browser UI or runtime control (eg running on a raspberry Pi in performance mode):
 
 ```bash
 audio-server --no-ws
 ```
 
-The WS server, broadcaster, and dispatcher are not started; only OSC + the audio pipeline + persistence run. Change settings by editing `configs/main.yaml` and restarting (or temporarily run with WS enabled to tune via the UI, then drop back to `--no-ws`).
+The WS server, broadcaster, and dispatcher are not started; only OSC + the
+audio pipeline + persistence run. Change settings by editing
+`configs/main.yaml` and restarting (or temporarily run with WS enabled to
+tune via the UI, then drop back to `--no-ws`).
 
-### 7. Defaults summary
+---
+
+## Defaults
 
 | Knob                      | Default        | Where to change                                  |
 |---------------------------|----------------|--------------------------------------------------|
@@ -281,6 +413,10 @@ The WS server, broadcaster, and dispatcher are not started; only OSC + the audio
 
 ## Notes
 
-- `configs/main.yaml` is **rewritten automatically** every time the UI changes a setting (atomic, debounced). Make sure its parent directory is writable. Saved presets live alongside as `preset-<name>.yaml`.
-- For non-default stereo channel pairs (aggregate devices, multichannel pro interfaces), pick the input channel via `sounddevice`'s device mapping rather than relying on the auto stereo mono-mix.
+- `configs/main.yaml` is **rewritten automatically** every time the UI
+  changes a setting (atomic, debounced). Make sure its parent directory is
+  writable. Saved presets live alongside as `preset-<name>.yaml`.
+- For non-default stereo channel pairs (aggregate devices, multichannel pro
+  interfaces), pick the input channel via `sounddevice`'s device mapping
+  rather than relying on the auto stereo mono-mix.
 - Tests live under `tests/` but the suite is empty for now.
