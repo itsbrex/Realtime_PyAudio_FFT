@@ -24,7 +24,7 @@ from .audio import devices as devmod
 from .audio.callback import AudioCallback
 from .audio.ringbuffer import SlotRing
 from .audio.stream import StreamHandle, open_input_stream
-from .config import Config, Persister, config_to_dict, load_config
+from .config import CANONICAL_CONFIG_PATH, Config, Persister, config_to_dict, load_config
 from .control.dispatcher import Dispatcher
 from .dsp.features import AutoScaler, ExpSmoother
 from .dsp.fft import FFTWorker
@@ -41,7 +41,8 @@ log = logging.getLogger(__name__)
 
 def _parse_args(argv):
     p = argparse.ArgumentParser(prog="audio-server", description="Realtime audio feature server")
-    p.add_argument("--config", default="configs/main.yaml", help="path to main config file")
+    p.add_argument("--config", default=None,
+                   help="path to main config file (default: <repo>/configs/main.yaml)")
     p.add_argument("--no-ws", action="store_true", help="disable the WebSocket server (headless OSC)")
     p.add_argument("--open", action="store_true", help="open the bundled UI in the default browser")
     p.add_argument("--device", type=int, default=None, help="override input device index")
@@ -756,14 +757,38 @@ def _migrate_legacy_config_layout(config_path: Path) -> None:
             pass
 
 
+def _resolve_config_path(arg_value: str | None) -> Path:
+    """Find the config file deterministically, regardless of CWD.
+
+    - --config omitted: use the canonical <repo>/configs/main.yaml.
+    - --config absolute: use as-is.
+    - --config relative: try CWD first, then repo-root.
+    """
+    if arg_value is None:
+        return CANONICAL_CONFIG_PATH.resolve()
+    p = Path(arg_value)
+    if p.is_absolute():
+        return p.resolve()
+    cwd_candidate = (Path.cwd() / p).resolve()
+    if cwd_candidate.exists():
+        return cwd_candidate
+    repo_candidate = (CANONICAL_CONFIG_PATH.parent.parent / p).resolve()
+    if repo_candidate.exists():
+        return repo_candidate
+    return cwd_candidate  # surface a sensible path in the error message
+
+
 def main(argv=None):
     args = _parse_args(argv if argv is not None else sys.argv[1:])
     logging.basicConfig(
         level=getattr(logging, args.log_level.upper(), logging.INFO),
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
     )
-    config_path = Path(args.config).resolve()
+    config_path = _resolve_config_path(args.config)
     _migrate_legacy_config_layout(config_path)
+    if not config_path.exists():
+        raise SystemExit(f"config file not found: {config_path}")
+    log.info("loading config from %s", config_path)
     cfg = load_config(config_path)
     if args.no_ws:
         cfg.ws.enabled = False

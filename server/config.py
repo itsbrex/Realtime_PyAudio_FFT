@@ -1,11 +1,18 @@
-"""Config dataclass, YAML load/save, debounced atomic Persister."""
+"""Config dataclass, YAML load/save, debounced atomic Persister.
+
+There are NO hardcoded defaults in this file. Every value is loaded from
+the YAML config file (default: ``<repo>/configs/main.yaml``). The dataclasses
+below are bare typed schemas; ``load_config`` constructs them from a
+fully-populated dict read off disk. The committed ``configs/main.yaml`` is
+the canonical default state — the runtime persister keeps it complete.
+"""
 from __future__ import annotations
 
 import asyncio
 import logging
 import os
 import tempfile
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, asdict
 from pathlib import Path
 
 import yaml
@@ -14,18 +21,20 @@ from .control import validate as V
 
 log = logging.getLogger(__name__)
 
+CANONICAL_CONFIG_PATH = (Path(__file__).resolve().parent.parent / "configs" / "main.yaml")
+
 
 @dataclass
 class DeviceCfg:
-    name: str | None = None
-    index: int | None = None
+    name: str | None
+    index: int | None
 
 
 @dataclass
 class AudioCfg:
-    device: DeviceCfg = field(default_factory=DeviceCfg)
-    blocksize: int = 256
-    channels: int = 1
+    device: DeviceCfg
+    blocksize: int
+    channels: int
 
 
 @dataclass
@@ -36,284 +45,166 @@ class BandCfg:
 
 @dataclass
 class DspCfg:
-    # Three independent bandpass bands. Defaults: low cuts sub-rumble below 30 Hz;
-    # high caps at 16 kHz to avoid empty top-octave on most consumer mics.
-    low: BandCfg = field(default_factory=lambda: BandCfg(30.0, 250.0))
-    mid: BandCfg = field(default_factory=lambda: BandCfg(250.0, 4000.0))
-    high: BandCfg = field(default_factory=lambda: BandCfg(4000.0, 16000.0))
-    # Asymmetric per-band envelope follower. `tau` is the RELEASE time constant
-    # (slow, smooths sustained content); `tau_attack` is the ATTACK time constant
-    # (fast, lets transients through). Defaults give a percussion-friendly shape:
-    # ~5-15 ms attack catches kick/snare/hat onsets cleanly, while the release
-    # taus average out the harmonic flutter on sustained material.
-    tau: dict = field(default_factory=lambda: {"low": 0.15, "mid": 0.06, "high": 0.02})
-    tau_attack: dict = field(default_factory=lambda: {"low": 0.015, "mid": 0.005, "high": 0.003})
+    low: BandCfg
+    mid: BandCfg
+    high: BandCfg
+    tau: dict
+    tau_attack: dict
 
 
 @dataclass
 class AutoscaleCfg:
-    tau_attack_s: float = 0.05
-    tau_release_s: float = 60.0
-    noise_floor: float = 0.001
-    strength: float = 1.0
-    # Final output gain applied to LMH and processed FFT after the full
-    # post-processing pipeline. Range [0.5, 1.5]; values >1 may push outputs
-    # past 1.0 (downstream consumers must accept that).
-    master_gain: float = 1.0
+    tau_attack_s: float
+    tau_release_s: float
+    noise_floor: float
+    strength: float
+    master_gain: float
 
 
 @dataclass
 class FftCfg:
-    enabled: bool = False
-    n_bins: int = 128
-    window_size: int = 1024
-    hop: int = 512
-    f_min: float = 30.0
-    db_floor: float = -90.0
-    db_ceiling: float = -10.0
-    # Spatial-smear width (in octaves) applied to the per-bin peak follower
-    # before the auto-scaler divides by it. 0 = each bin self-normalizes
-    # independently (single-tone bins can over-attenuate themselves). Larger
-    # values share normalization across neighboring bins so a single-frequency
-    # spike still reads as taller-than-average against its spectral context.
-    peak_smear_oct: float = 0.3
-    # Spectral tilt added to the wire dB before the noise gate / peak follower:
-    # +tilt_db_per_oct dB per octave above 1 kHz, -tilt_db_per_oct dB per octave
-    # below. Compensates for the natural downward slope of music/voice spectra
-    # so a single global noise_floor gates uniformly across frequency. 0 disables.
-    tilt_db_per_oct: float = 3.0
-    # When True, OSC + WS send the raw wire dB stream. When False (default),
-    # they send the post-processed stream (smoothed, peak-normalized, gated,
-    # tanh-compressed, strength-blended) — same semantics as L/M/H over OSC.
-    send_raw_db: bool = False
+    enabled: bool
+    n_bins: int
+    window_size: int
+    hop: int
+    f_min: float
+    db_floor: float
+    db_ceiling: float
+    peak_smear_oct: float
+    tilt_db_per_oct: float
+    send_raw_db: bool
 
 
 @dataclass
 class OscDest:
-    host: str = "127.0.0.1"
-    port: int = 9000
+    host: str
+    port: int
 
 
 @dataclass
 class OscCfg:
-    destinations: list = field(default_factory=lambda: [OscDest()])
-    send_fft: bool = False
-
-
-def _default_layout() -> dict:
-    # Tiling 2x2 layout: two splits + quadrant order (TL, TR, BL, BR). Default
-    # mirrors the legacy CSS grid: narrow left column (bars + scene), wider
-    # right column (lines + fft), split horizontally 40/60.
-    return {
-        "split_x": 0.4,
-        "split_y": 0.5,
-        "quadrants": ["bars", "lines", "scene", "fft"],
-    }
+    destinations: list
+    send_fft: bool
 
 
 @dataclass
 class UiCfg:
-    # Visual peak-hold decay rate (per second) for the L/M/H bars and FFT
-    # visualizers. Pure UI-side concern — does not affect DSP or OSC payload.
-    peak_decay_per_s: float = 0.6
-    # Per-card layout (x, y, w, h as fractions of the viz container) for the
-    # four viz cards. Free-floating: cards may overlap. Edited via the UI
-    # (drag edges to resize, drag title to move/swap) and persisted here.
-    layout: dict = field(default_factory=_default_layout)
+    peak_decay_per_s: float
+    layout: dict
 
 
 @dataclass
 class WsCfg:
-    enabled: bool = True
-    host: str = "127.0.0.1"
-    port: int = 8765
-    snapshot_hz: int = 60
-    http_port: int = 8766  # static-file server for the UI (ES modules need http://)
+    enabled: bool
+    host: str
+    port: int
+    snapshot_hz: int
+    http_port: int
 
 
 @dataclass
 class Config:
-    audio: AudioCfg = field(default_factory=AudioCfg)
-    dsp: DspCfg = field(default_factory=DspCfg)
-    autoscale: AutoscaleCfg = field(default_factory=AutoscaleCfg)
-    fft: FftCfg = field(default_factory=FftCfg)
-    osc: OscCfg = field(default_factory=OscCfg)
-    ws: WsCfg = field(default_factory=WsCfg)
-    ui: UiCfg = field(default_factory=UiCfg)
+    audio: AudioCfg
+    dsp: DspCfg
+    autoscale: AutoscaleCfg
+    fft: FftCfg
+    osc: OscCfg
+    ws: WsCfg
+    ui: UiCfg
 
 
-def _bands_dict(cfg: DspCfg) -> dict:
-    return {
-        "low":  {"lo_hz": cfg.low.lo_hz,  "hi_hz": cfg.low.hi_hz},
-        "mid":  {"lo_hz": cfg.mid.lo_hz,  "hi_hz": cfg.mid.hi_hz},
-        "high": {"lo_hz": cfg.high.lo_hz, "hi_hz": cfg.high.hi_hz},
-    }
+def _build_config(d: dict) -> Config:
+    """Build a Config from a fully-populated dict.
+
+    Missing keys raise KeyError — config files are expected to be
+    complete (the runtime persister always writes the full state).
+    Values are routed through validators where the live control path has
+    them, so a corrupt-but-parseable YAML still surfaces a clear error.
+    """
+    a = d["audio"]
+    dev = a.get("device") or {}
+    audio = AudioCfg(
+        device=DeviceCfg(name=dev.get("name"), index=dev.get("index")),
+        blocksize=int(a["blocksize"]),
+        channels=int(a["channels"]),
+    )
+
+    ds = d["dsp"]
+    bands_raw = {k: ds[k] for k in ("low", "mid", "high")}
+    # validate_bands needs a sample rate; 48k is the standard guess used
+    # at config-load time (real sr applies on retune in main.App).
+    ok = V.validate_bands(bands_raw, 48000.0)
+    dsp = DspCfg(
+        low=BandCfg(*ok["low"]),
+        mid=BandCfg(*ok["mid"]),
+        high=BandCfg(*ok["high"]),
+        tau=V.validate_tau(ds["tau"]),
+        tau_attack=V.validate_tau(ds["tau_attack"]),
+    )
+
+    asd = d["autoscale"]
+    ok_as = V.validate_autoscale(
+        tau_attack_s=asd["tau_attack_s"],
+        tau_release_s=asd["tau_release_s"],
+        noise_floor=asd["noise_floor"],
+        strength=asd["strength"],
+        master_gain=asd["master_gain"],
+    )
+    autoscale = AutoscaleCfg(**ok_as)
+
+    fd = d["fft"]
+    fft = FftCfg(
+        enabled=bool(fd["enabled"]),
+        n_bins=V.validate_n_fft_bins(fd["n_bins"]),
+        window_size=int(fd["window_size"]),
+        hop=int(fd["hop"]),
+        f_min=float(fd["f_min"]),
+        db_floor=float(fd["db_floor"]),
+        db_ceiling=float(fd["db_ceiling"]),
+        peak_smear_oct=float(fd["peak_smear_oct"]),
+        tilt_db_per_oct=V.validate_fft_tilt_db_per_oct(fd["tilt_db_per_oct"]),
+        send_raw_db=bool(fd["send_raw_db"]),
+    )
+
+    od = d["osc"]
+    dests = [OscDest(host=str(x["host"]), port=int(x["port"])) for x in od["destinations"]]
+    osc = OscCfg(destinations=dests, send_fft=bool(od["send_fft"]))
+
+    wd = d["ws"]
+    ws = WsCfg(
+        enabled=bool(wd["enabled"]),
+        host=str(wd["host"]),
+        port=int(wd["port"]),
+        snapshot_hz=V.validate_ws_snapshot_hz(wd["snapshot_hz"]),
+        http_port=int(wd["http_port"]),
+    )
+
+    ud = d["ui"]
+    ui = UiCfg(
+        peak_decay_per_s=V.validate_peak_decay_per_s(ud["peak_decay_per_s"]),
+        layout=V.validate_ui_layout(ud["layout"]),
+    )
+
+    return Config(audio=audio, dsp=dsp, autoscale=autoscale, fft=fft, osc=osc, ws=ws, ui=ui)
 
 
 def load_config(path: Path | str) -> Config:
+    """Load and validate a config file. No fallbacks, no merging.
+
+    Raises ``FileNotFoundError`` if missing. Raises ``ValueError`` if the
+    file parses but a section is missing or invalid (missing keys surface
+    as KeyError from ``_build_config``, re-wrapped here for clarity).
+    """
     path = Path(path)
-    cfg = Config()
     if not path.exists():
-        return cfg
-    try:
-        raw = yaml.safe_load(path.read_text()) or {}
-    except Exception as e:
-        log.warning("config load failed (%s); using defaults", e)
-        return cfg
+        raise FileNotFoundError(f"config file not found: {path}")
+    raw = yaml.safe_load(path.read_text())
     if not isinstance(raw, dict):
-        log.warning("config root is not a mapping; using defaults")
-        return cfg
-
-    known = {"audio", "dsp", "autoscale", "fft", "osc", "ws", "ui"}
-    for k in raw:
-        if k not in known:
-            log.warning("config: unknown top-level key %r (ignored)", k)
-
-    # audio
-    a_raw = raw.get("audio", {}) or {}
-    dev_raw = a_raw.get("device", {}) or {}
-    cfg.audio.device = DeviceCfg(
-        name=dev_raw.get("name") if isinstance(dev_raw.get("name"), str) else None,
-        index=dev_raw.get("index") if isinstance(dev_raw.get("index"), int) else None,
-    )
-    if isinstance(a_raw.get("blocksize"), int) and 32 <= a_raw["blocksize"] <= 4096:
-        cfg.audio.blocksize = a_raw["blocksize"]
-    if isinstance(a_raw.get("channels"), int) and a_raw["channels"] in (1, 2):
-        cfg.audio.channels = a_raw["channels"]
-
-    # dsp - validate as if it were a control message; bad values fall back
-    d_raw = raw.get("dsp", {}) or {}
-    sr_guess = 48000.0  # validation here uses a guess; real sr applies on retune
-
-    bands_raw = {k: d_raw.get(k) for k in ("low", "mid", "high") if isinstance(d_raw.get(k), dict)}
-    if len(bands_raw) == 3:
-        try:
-            ok = V.validate_bands(bands_raw, sr_guess)
-            cfg.dsp.low  = BandCfg(*ok["low"])
-            cfg.dsp.mid  = BandCfg(*ok["mid"])
-            cfg.dsp.high = BandCfg(*ok["high"])
-        except Exception as e:
-            log.warning("config dsp bands invalid (%s); using defaults", e)
-    elif "low_hz" in d_raw and "high_hz" in d_raw:
-        # Migrate legacy LP/BP/HP cutoffs into three bandpasses.
-        try:
-            lo = float(d_raw["low_hz"])
-            hi = float(d_raw["high_hz"])
-            low_floor = 30.0
-            high_ceiling = min(16000.0, 0.45 * sr_guess - 1.0)
-            migrated = {
-                "low":  {"lo_hz": low_floor, "hi_hz": lo},
-                "mid":  {"lo_hz": lo,        "hi_hz": hi},
-                "high": {"lo_hz": hi,        "hi_hz": high_ceiling},
-            }
-            ok = V.validate_bands(migrated, sr_guess)
-            cfg.dsp.low  = BandCfg(*ok["low"])
-            cfg.dsp.mid  = BandCfg(*ok["mid"])
-            cfg.dsp.high = BandCfg(*ok["high"])
-            log.info("migrated legacy dsp.low_hz/high_hz to 3-bandpass schema")
-        except Exception as e:
-            log.warning("config dsp legacy migration failed (%s); using defaults", e)
-
+        raise ValueError(f"config root must be a YAML mapping: {path}")
     try:
-        if "tau" in d_raw:
-            cfg.dsp.tau = {**cfg.dsp.tau, **V.validate_tau(d_raw["tau"])}
-    except Exception as e:
-        log.warning("config dsp.tau invalid (%s); using defaults", e)
-    try:
-        if "tau_attack" in d_raw:
-            cfg.dsp.tau_attack = {**cfg.dsp.tau_attack, **V.validate_tau(d_raw["tau_attack"])}
-    except Exception as e:
-        log.warning("config dsp.tau_attack invalid (%s); using defaults", e)
-
-    # autoscale
-    as_raw = raw.get("autoscale", {}) or {}
-    try:
-        ok = V.validate_autoscale(
-            tau_attack_s=as_raw.get("tau_attack_s"),
-            tau_release_s=as_raw.get("tau_release_s"),
-            noise_floor=as_raw.get("noise_floor"),
-            strength=as_raw.get("strength"),
-            master_gain=as_raw.get("master_gain"),
-        )
-        for k, v in ok.items():
-            setattr(cfg.autoscale, k, v)
-    except Exception as e:
-        log.warning("config autoscale invalid (%s); using defaults", e)
-
-    # fft
-    f_raw = raw.get("fft", {}) or {}
-    if isinstance(f_raw.get("enabled"), bool):
-        cfg.fft.enabled = f_raw["enabled"]
-    try:
-        if "n_bins" in f_raw:
-            cfg.fft.n_bins = V.validate_n_fft_bins(f_raw["n_bins"])
-    except Exception as e:
-        log.warning("config fft.n_bins invalid (%s); using default", e)
-    if isinstance(f_raw.get("window_size"), int) and f_raw["window_size"] in (256, 512, 1024, 2048, 4096):
-        cfg.fft.window_size = f_raw["window_size"]
-    if isinstance(f_raw.get("hop"), int) and 32 <= f_raw["hop"] <= cfg.fft.window_size:
-        cfg.fft.hop = f_raw["hop"]
-    if isinstance(f_raw.get("f_min"), (int, float)) and 1.0 <= f_raw["f_min"] <= 1000.0:
-        cfg.fft.f_min = float(f_raw["f_min"])
-    if isinstance(f_raw.get("db_floor"), (int, float)):
-        cfg.fft.db_floor = float(f_raw["db_floor"])
-    if isinstance(f_raw.get("db_ceiling"), (int, float)):
-        cfg.fft.db_ceiling = float(f_raw["db_ceiling"])
-    if isinstance(f_raw.get("peak_smear_oct"), (int, float)):
-        v = float(f_raw["peak_smear_oct"])
-        if 0.0 <= v <= 3.0:
-            cfg.fft.peak_smear_oct = v
-    if "tilt_db_per_oct" in f_raw:
-        try:
-            cfg.fft.tilt_db_per_oct = V.validate_fft_tilt_db_per_oct(f_raw["tilt_db_per_oct"])
-        except Exception as e:
-            log.warning("config fft.tilt_db_per_oct invalid (%s); using default", e)
-    if isinstance(f_raw.get("send_raw_db"), bool):
-        cfg.fft.send_raw_db = f_raw["send_raw_db"]
-
-    # osc
-    o_raw = raw.get("osc", {}) or {}
-    dests = o_raw.get("destinations")
-    if isinstance(dests, list) and dests:
-        good = []
-        for d in dests:
-            if isinstance(d, dict) and isinstance(d.get("host"), str) and isinstance(d.get("port"), int):
-                good.append(OscDest(host=d["host"], port=d["port"]))
-        if good:
-            cfg.osc.destinations = good
-    if isinstance(o_raw.get("send_fft"), bool):
-        cfg.osc.send_fft = o_raw["send_fft"]
-
-    # ws
-    w_raw = raw.get("ws", {}) or {}
-    if isinstance(w_raw.get("enabled"), bool):
-        cfg.ws.enabled = w_raw["enabled"]
-    if isinstance(w_raw.get("host"), str):
-        cfg.ws.host = w_raw["host"]
-    if isinstance(w_raw.get("port"), int):
-        cfg.ws.port = w_raw["port"]
-    if isinstance(w_raw.get("http_port"), int):
-        cfg.ws.http_port = w_raw["http_port"]
-    try:
-        if "snapshot_hz" in w_raw:
-            cfg.ws.snapshot_hz = V.validate_ws_snapshot_hz(w_raw["snapshot_hz"])
-    except Exception as e:
-        log.warning("config ws.snapshot_hz invalid (%s); using default", e)
-
-    # ui
-    u_raw = raw.get("ui", {}) or {}
-    try:
-        if "peak_decay_per_s" in u_raw:
-            cfg.ui.peak_decay_per_s = V.validate_peak_decay_per_s(u_raw["peak_decay_per_s"])
-    except Exception as e:
-        log.warning("config ui.peak_decay_per_s invalid (%s); using default", e)
-    if "layout" in u_raw:
-        try:
-            cfg.ui.layout = V.validate_ui_layout(u_raw["layout"])
-        except Exception as e:
-            log.warning("config ui.layout invalid (%s); using default", e)
-
-    return cfg
+        return _build_config(raw)
+    except KeyError as e:
+        raise ValueError(f"config {path} missing required key: {e}") from e
 
 
 def config_to_dict(cfg: Config) -> dict:
