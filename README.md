@@ -2,6 +2,12 @@
 <video src="https://storage.googleapis.com/public-assets-xander/A_workbox/random_vids/demo.mp4" width="80%" controls></video>
 </p>
 
+
+
+https://github.com/user-attachments/assets/83547924-0b8d-4667-ba55-5cb813fdc09d
+
+
+
 # Realtime Audio Feature Server
 
 A highly optimized, minimal latency, localhost Python server that captures live audio (mic, line-in, soundcard, loopback device, ...), and computes:
