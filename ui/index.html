@@ -198,36 +198,6 @@ Smearing the peak across nearby bins fixes this: the tone now competes against i
         </fieldset>
 
         <fieldset>
-          <legend title="**Smoothing — release side.**
-
-How fast the smoothed value *decays* after a peak. This is the dominant source of trailing latency in the L/M/H feature stream and FFT bins.
-
-What this means in audio terms:
-
-- **Larger** → output looks smoother, more 'flowing'. Harmonic flutter inside a held note is averaged out. Good for ambient features and mood-style visualizers.
-- **Smaller** → output is twitchier, follows individual cycles more closely. Good for percussive / rhythmic features where you want energy to drop fast between hits so each hit reads as distinct.
-
-The matching attack-τ knobs below control how fast onsets pass through. Setting **release ≫ attack** is the classic percussion shape: fast hit, slow tail.
-
-Per-band τ also drives the FFT-bin smoother (log-interpolated from the L/M/H band centers).">Smoothing release τ (ms)</legend>
-          <label title="**LOW band release.**
-
-Larger → smooths sustained bass; kick body and bass notes blur into a flowing envelope. Smaller → each kick decays sharply, distinct hits stay separated.
-
-Falling-edge τ only — onsets are governed by the attack-τ slider below.">low <input type="range" id="tau-low"  min="5" max="2000" step="1" data-log="1" /> <span id="tau-low-val"></span></label>
-          <label title="**MID band release.**
-
-Larger → smooths sustained voice and snare body into a held envelope. Smaller → consonants and snare hits decay quickly, transients stay punchy.
-
-Falling-edge τ only — onsets are governed by the attack-τ slider below.">mid <input type="range" id="tau-mid"  min="5" max="2000" step="1" data-log="1" /> <span id="tau-mid-val"></span></label>
-          <label title="**HIGH band release.**
-
-Larger → hat / cymbal sizzle averages into a continuous shimmer. Smaller → each cymbal strike fades fast, individual hi-hat hits remain crisp.
-
-Falling-edge τ only — onsets are governed by the attack-τ slider below.">high <input type="range" id="tau-high" min="5" max="2000" step="1" data-log="1" /> <span id="tau-high-val"></span></label>
-        </fieldset>
-
-        <fieldset>
           <legend title="**Smoothing — attack side.**
 
 How fast the smoothed value *responds to a rising signal*. This determines how sharply transients (kicks, snares, hi-hats, vocal consonants) register in the feature stream.
@@ -249,6 +219,36 @@ Catches snare snap and vocal consonants. `~3–5 ms` is typical — fast enough 
           <label title="**HIGH band attack.**
 
 Catches hat / cymbal / sibilance onsets. `~3 ms or less` — these events are short and need to register sharply or they'll get blurred into the surrounding sizzle.">high <input type="range" id="tau-attack-high" min="1" max="200" step="1" data-log="1" /> <span id="tau-attack-high-val"></span></label>
+        </fieldset>
+
+        <fieldset>
+          <legend title="**Smoothing — release side.**
+
+How fast the smoothed value *decays* after a peak. This is the dominant source of trailing latency in the L/M/H feature stream and FFT bins.
+
+What this means in audio terms:
+
+- **Larger** → output looks smoother, more 'flowing'. Harmonic flutter inside a held note is averaged out. Good for ambient features and mood-style visualizers.
+- **Smaller** → output is twitchier, follows individual cycles more closely. Good for percussive / rhythmic features where you want energy to drop fast between hits so each hit reads as distinct.
+
+The matching attack-τ knobs above control how fast onsets pass through. Setting **release ≫ attack** is the classic percussion shape: fast hit, slow tail.
+
+Per-band τ also drives the FFT-bin smoother (log-interpolated from the L/M/H band centers).">Smoothing release τ (ms)</legend>
+          <label title="**LOW band release.**
+
+Larger → smooths sustained bass; kick body and bass notes blur into a flowing envelope. Smaller → each kick decays sharply, distinct hits stay separated.
+
+Falling-edge τ only — onsets are governed by the attack-τ slider above.">low <input type="range" id="tau-low"  min="5" max="2000" step="1" data-log="1" /> <span id="tau-low-val"></span></label>
+          <label title="**MID band release.**
+
+Larger → smooths sustained voice and snare body into a held envelope. Smaller → consonants and snare hits decay quickly, transients stay punchy.
+
+Falling-edge τ only — onsets are governed by the attack-τ slider above.">mid <input type="range" id="tau-mid"  min="5" max="2000" step="1" data-log="1" /> <span id="tau-mid-val"></span></label>
+          <label title="**HIGH band release.**
+
+Larger → hat / cymbal sizzle averages into a continuous shimmer. Smaller → each cymbal strike fades fast, individual hi-hat hits remain crisp.
+
+Falling-edge τ only — onsets are governed by the attack-τ slider above.">high <input type="range" id="tau-high" min="5" max="2000" step="1" data-log="1" /> <span id="tau-high-val"></span></label>
         </fieldset>
 
         <fieldset>
