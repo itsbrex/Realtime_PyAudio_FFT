@@ -786,6 +786,15 @@ def main(argv=None):
     )
     config_path = _resolve_config_path(args.config)
     _migrate_legacy_config_layout(config_path)
+    if not config_path.exists() and args.config is None:
+        # Fresh clone: seed configs/main.yaml from the checked-in example so
+        # the persister has a writable target. Example has device=null so
+        # resolve_initial_device falls through to the system default.
+        example = config_path.parent / "main.example.yaml"
+        if example.exists():
+            import shutil
+            shutil.copyfile(example, config_path)
+            log.info("seeded %s from %s", config_path, example)
     if not config_path.exists():
         raise SystemExit(f"config file not found: {config_path}")
     log.info("loading config from %s", config_path)

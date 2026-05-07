@@ -1,7 +1,7 @@
 audio:
   device:
-    name: MacBook Pro Microphone
-    index: 3
+    name: null
+    index: null
   blocksize: 256
   channels: 1
 dsp:

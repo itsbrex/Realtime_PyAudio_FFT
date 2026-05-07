@@ -11,5 +11,8 @@ venv/
 build/
 dist/
 
-# Saved presets (config.yaml itself is checked in as the default state)
+# Saved presets
 preset-*.yaml
+
+# Local runtime config (seeded from configs/main.example.yaml on first run)
+configs/main.yaml
