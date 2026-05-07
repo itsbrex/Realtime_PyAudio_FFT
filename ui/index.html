@@ -20,7 +20,22 @@
     <main class="grid" id="main-grid">
       <section class="viz-grid">
         <div class="viz-card" data-card="bars">
-          <div class="viz-title">L/M/H bars + peak hold <label class="inline" title="**Peak-hold decay rate** (units / sec).
+          <div class="viz-title"><span title="**L/M/H output — sent over OSC.**
+
+The three colored bars (`low`, `mid`, `high`) are the live signal that ships to downstream consumers. The **white peak-hold ticks are visual only** — not transmitted.
+
+# OSC
+
+- Address: `/audio/lmh`
+- Payload: `[low: f32, mid: f32, high: f32]` — three floats per message
+- Range: `[0, 1]` typically (unclamped — *master gain* > 1 can push above)
+- Rate: matches the audio block rate (~`sr / blocksize`, e.g. ~187 Hz at 48 kHz / 256-sample blocks)
+- Default destination: `127.0.0.1:9000` (configurable in `config.yaml` under `osc.destinations`)
+- Band edges (Hz) are announced once on `/audio/meta` — see config or the band selector.
+
+# WebSocket
+
+Same values are also published in the JSON `snapshot` frames on `ws://127.0.0.1:8765` (field `scaled.{low,mid,high}`).">L/M/H bars + peak hold</span> <label class="inline" title="**Peak-hold decay rate** (units / sec).
 
 Affects the white peak ticks on this graph **and** on the FFT graph.
 
@@ -31,7 +46,22 @@ Affects the white peak ticks on this graph **and** on the FFT graph.
           <canvas id="viz-bars" width="320" height="200"></canvas>
         </div>
         <div class="viz-card" data-card="lines">
-          <div class="viz-title">L/M/H rolling lines <label class="inline" title="**Rolling history window** (seconds).
+          <div class="viz-title"><span title="**L/M/H output — sent over OSC.**
+
+Rolling history of the same three signals as the bar graph. The colored polylines (`low`, `mid`, `high`) are what ships downstream; peak-hold markers on the bars graph are visual only.
+
+# OSC
+
+- Address: `/audio/lmh`
+- Payload: `[low: f32, mid: f32, high: f32]`
+- Range: `[0, 1]` typically (unclamped if *master gain* > 1)
+- Rate: per audio block (~`sr / blocksize`, e.g. ~187 Hz at 48 kHz / 256)
+- Default destination: `127.0.0.1:9000` (configure in `config.yaml` → `osc.destinations`)
+- Meta on `/audio/meta` carries `[sr, blocksize, n_fft_bins, low_lo, low_hi, mid_lo, mid_hi, high_lo, high_hi]`
+
+# WebSocket
+
+Also available in the JSON `snapshot` frames on `ws://127.0.0.1:8765` (field `scaled.{low,mid,high}`).">L/M/H rolling lines</span> <label class="inline" title="**Rolling history window** (seconds).
 
 How far back the rolling chart extends. Larger values pack more time into the same canvas width.
 
@@ -39,11 +69,33 @@ How far back the rolling chart extends. Larger values pack more time into the sa
           <canvas id="viz-lines" width="640" height="200"></canvas>
         </div>
         <div class="viz-card" data-card="scene">
-          <div class="viz-title">L/M/H scene</div>
+          <div class="viz-title"><span title="**Visual aid only — not an output signal.**
+
+The disc, tint, and sparkles are a decorative reactive scene driven from the same L/M/H values as the other graphs. Nothing here is transmitted: no separate OSC address, no separate WS payload.
+
+To consume the underlying signal, use `/audio/lmh` (see the bars or rolling-lines tooltips).">L/M/H scene</span></div>
           <canvas id="viz-scene" width="640" height="200"></canvas>
         </div>
         <div class="viz-card" data-card="fft">
-          <div class="viz-title">FFT (log-x, dB) <label class="inline" title="**Enable / disable the FFT worker.**
+          <div class="viz-title"><span title="**FFT output — sent over OSC.**
+
+What you see here is **byte-identical** to the wire payload. The white peak-hold ticks are visual only.
+
+# OSC
+
+- Address: `/audio/fft`
+- Payload: `n_bins` float32 values (default `n_bins = 128`, configurable via `fft.n_bins` in `config.yaml`)
+- Range:
+  - **raw dB OFF** (default) → `[0, 1]` post-processed (smoother → peak follower → gate → tanh → strength blend)
+  - **raw dB ON** → log-spaced spectrum in dB; empty low bins are rewritten to `db_floor` on OSC so consumers stay in-range
+- Rate: hop-rate (~`sr / hop`, e.g. ~94 Hz at 48 kHz / hop=512). Only sent when the FFT worker is enabled and `osc.send_fft` is true.
+- Default destination: `127.0.0.1:9000`
+- Bin layout: log-spaced from `fft.f_min` to Nyquist; geometry announced once on `/audio/meta` (`n_fft_bins`).
+
+# WebSocket
+
+Same bins are pushed as a binary frame on `ws://127.0.0.1:8765`:
+`[type=1: u8][reserved: u8][n_bins: u16 LE][float32 × n_bins LE]`. The `meta.fft_send_raw_db` flag tells you which interpretation applies.">FFT (log-x, dB)</span> <label class="inline" title="**Enable / disable the FFT worker.**
 
 Disabling saves CPU when you only need L/M/H."><input type="checkbox" id="fft-toggle" /> enable</label> <label class="inline" title="**What you see is what's sent.** This graph is byte-identical to the `/audio/fft` OSC payload.
 
@@ -221,7 +273,7 @@ Drives both:
 - how often the server pushes L/M/H snapshots and FFT frames over WS
 - how often the canvases redraw (throttled to match)
 
-Snaps to standard frame rates: `15 / 24 / 30 / 60 / 90 / 120 fps`, capped at 120.">fps <input type="range" id="ws-hz" min="0" max="5" step="1" /> <span id="ws-hz-val"></span></label>
+Snaps to standard frame rates: `15 / 24 / 30 / 40 / 60 / 90 / 120 fps`, capped at 120.">fps <input type="range" id="ws-hz" min="0" max="6" step="1" /> <span id="ws-hz-val"></span></label>
         </fieldset>
 
         <fieldset>

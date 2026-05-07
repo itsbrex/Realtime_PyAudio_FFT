@@ -10,23 +10,23 @@ dsp:
     hi_hz: 184.0
   mid:
     lo_hz: 296.0
-    hi_hz: 1856.0
+    hi_hz: 1760.0
   high:
     lo_hz: 2624.0
     hi_hz: 13952.0
   tau:
-    low: 0.09984995066802352
-    mid: 0.060106677539281055
-    high: 0.029765877731474558
+    low: 0.11992496177470643
+    mid: 0.0750654748146506
+    high: 0.04974534040012045
   tau_attack:
     low: 0.014718360806575797
     mid: 0.004940579455869164
     high: 0.0031420094470879134
 autoscale:
   tau_attack_s: 0.2552096536028223
-  tau_release_s: 10.0
+  tau_release_s: 30.0
   noise_floor: 3.213660538640315e-05
-  strength: 1.0
+  strength: 0.7
   master_gain: 1.0
 fft:
   enabled: true
@@ -37,13 +37,13 @@ fft:
   db_floor: -90.0
   db_ceiling: -10.0
   peak_smear_oct: 0.3
-  tilt_db_per_oct: 3.0
+  tilt_db_per_oct: 3.5
   send_raw_db: false
 osc:
   destinations:
   - host: 127.0.0.1
     port: 9000
-  send_fft: false
+  send_fft: true
 ws:
   enabled: true
   host: 127.0.0.1
@@ -53,8 +53,8 @@ ws:
 ui:
   peak_decay_per_s: 0.5
   layout:
-    split_x: 0.354932218615625
-    split_y: 0.3815992907016653
+    split_x: 0.37219680520546367
+    split_y: 0.45117476239977855
     quadrants:
     - bars
     - lines

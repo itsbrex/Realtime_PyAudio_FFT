@@ -23,13 +23,19 @@ class SlotRing:
         self.blocksize = blocksize
         self.slots = np.zeros((n_slots_pow2, blocksize), dtype=np.float32)
         self.block_seq = np.zeros(n_slots_pow2, dtype=np.int64)
+        # Per-slot wall-clock timestamp (perf_counter_ns) of the moment the
+        # audio callback finished writing the block. Consumers read it through
+        # the slot index alongside the data, then pass it down the pipeline so
+        # end-to-end latency can be measured at the OSC send point.
+        self.block_t_ns = np.zeros(n_slots_pow2, dtype=np.int64)
         self.write_idx = 0  # monotonic block count; published last
 
     # ------------- producer (audio callback) -------------
-    def write_block(self, src: np.ndarray) -> None:
+    def write_block(self, src: np.ndarray, t_ns: int = 0) -> None:
         wi = self.write_idx
         slot = wi & self.mask
         np.copyto(self.slots[slot], src)        # 1. data
+        self.block_t_ns[slot] = t_ns            # parallel to data; published with seq
         self.block_seq[slot] = wi + 1           # 2. per-slot publish
         self.write_idx = wi + 1                 # 3. global publish
 
@@ -60,4 +66,5 @@ class SlotRing:
         """Wipe state; called on device hot-switch."""
         self.write_idx = 0
         self.block_seq.fill(0)
+        self.block_t_ns.fill(0)
         self.slots.fill(0.0)

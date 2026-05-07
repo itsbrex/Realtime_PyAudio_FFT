@@ -76,6 +76,9 @@ class WSServer:
         self._t0 = time.monotonic()
         self.perf_ring: np.ndarray | None = perf_ring
         self._perf_idx = 0
+        # Preallocated f32 scratch for the gain-multiplied FFT frame on the
+        # broadcast hot path. Resized lazily if n_bins changes.
+        self._fft_scratch: np.ndarray | None = None
 
     @property
     def snapshot_hz(self) -> int:
@@ -181,7 +184,9 @@ class WSServer:
 
     async def _broadcast(self, msg):
         text = msg if isinstance(msg, (bytes, str)) else json.dumps(msg)
-        for c in list(self.clients):
+        # Single-threaded asyncio: queue ops don't await, so iterating the
+        # set is safe (no concurrent add/remove from _handle_client).
+        for c in self.clients:
             c.outbound.put_nowait_drop_oldest(text)
 
     # ---------------- broadcast loop (60 Hz default) ----------------
@@ -196,7 +201,7 @@ class WSServer:
             if not self.clients:
                 continue
             # L/M/H snapshot
-            seq, raw, scaled = self.features_store.read()
+            seq, raw, scaled, _t = self.features_store.read()
             if seq != last_feat_seq:
                 last_feat_seq = seq
                 g = self.get_master_gain()
@@ -212,23 +217,45 @@ class WSServer:
                     "t": self._server_ms(),
                 }
                 text = json.dumps(msg)
-                for c in list(self.clients):
+                for c in self.clients:
                     c.outbound.put_nowait_drop_oldest(text)
             # FFT — pick raw vs processed stream based on the user-facing flag
             # so what the UI renders is byte-identical to what OSC sends.
             if self.get_fft_enabled():
                 kind = "raw_db" if self.get_fft_send_raw_db() else "processed"
-                fseq, frame = self.fft_store.read(kind)
+                fseq, frame, _ft = self.fft_store.read(kind)
                 if fseq != last_fft_seq and frame is not None:
                     last_fft_seq = fseq
                     # Master gain only multiplies the processed feature
                     # output; the raw-dB monitor stream is sent untouched.
                     gain = 1.0 if kind == "raw_db" else self.get_master_gain()
-                    payload = encode_fft_binary(frame, gain)
-                    for c in list(self.clients):
+                    payload = self._encode_fft_binary(frame, gain)
+                    for c in self.clients:
                         c.outbound.put_nowait_drop_oldest(payload)
             if self.perf_ring is not None:
                 self._record_perf(time.perf_counter_ns() - t_start)
+
+    def _encode_fft_binary(self, frame: np.ndarray, gain: float) -> bytes:
+        """Wire layout: [type=1:u8][reserved:u8][n_bins:u16][float32 * n_bins] LE.
+
+        Avoids the per-tick `arr * gain` allocation by writing into a
+        preallocated f32 scratch when gain != 1.0. The final bytes object
+        is unavoidable (we hand it to per-client queues; downstream send
+        coroutines need a stable bytes-like).
+        """
+        n = int(frame.shape[0])
+        if gain != 1.0:
+            scratch = self._fft_scratch
+            if scratch is None or scratch.size != n:
+                scratch = np.empty(n, dtype=np.float32)
+                self._fft_scratch = scratch
+            np.multiply(frame, np.float32(gain), out=scratch)
+            buf = scratch
+        else:
+            # frame is already float32; tobytes() is the only alloc.
+            buf = frame
+        header = struct.pack("<BBH", 1, 0, n)
+        return header + buf.tobytes(order="C")
 
     def _record_perf(self, dt_ns: int):
         ring = self.perf_ring
@@ -244,11 +271,11 @@ class WSServer:
     def perf_idx(self) -> int:
         return self._perf_idx
 
-    # ---------------- status loop (2 Hz) ----------------
+    # ---------------- status loop (5 Hz) ----------------
     async def _status_loop(self):
         while not self._stop.is_set():
             try:
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.2)
             except asyncio.CancelledError:
                 return
             if self._stop.is_set():

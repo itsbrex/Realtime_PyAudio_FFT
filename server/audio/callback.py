@@ -45,10 +45,13 @@ class AudioCallback:
         else:
             np.add(in_data[:, 0], in_data[:, 1], out=self.mono_buf)
             np.multiply(self.mono_buf, 0.5, out=self.mono_buf)
-        self.ring.write_block(self.mono_buf)
+        t1 = time.perf_counter_ns()
+        # Stamp the slot with the moment the block became available. Done
+        # before signalling so consumers reading the slot always see a valid
+        # timestamp paired with the data.
+        self.ring.write_block(self.mono_buf, t1)
         self.dsp_event.set()
         self.fft_event.set()
-        t1 = time.perf_counter_ns()
         i = self.perf_idx
         self.perf_ring[i % self.perf_len] = t1 - t0
         self.perf_idx = i + 1

@@ -67,9 +67,14 @@ def open_input_stream(device: int | None, blocksize: int, channels: int, callbac
         "stream open: device=%s sr=%.0f blocksize=%d channels=%d latency=%.1fms",
         device, h.samplerate, blocksize, channels, h.latency * 1000.0
     )
-    if h.latency > 2.0 * (blocksize / max(h.samplerate, 1.0)):
+    # Only warn on truly excessive host latency. On macOS CoreAudio the reported
+    # device latency includes a hardware safety offset (~30–40ms is normal for
+    # the built-in mic at blocksize=256/48k), so the old "2x blocksize/sr"
+    # threshold misfired on every clean run. Warn only above an absolute floor
+    # that actually correlates with audible problems.
+    if h.latency > 0.080:
         log.warning(
-            "device latency %.1fms exceeds 2x blocksize/sr; check Audio MIDI Setup buffer",
+            "device latency %.1fms is high; check Audio MIDI Setup buffer",
             h.latency * 1000.0,
         )
     return h

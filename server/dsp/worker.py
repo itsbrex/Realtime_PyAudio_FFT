@@ -66,6 +66,7 @@ class DSPWorker(threading.Thread):
 
             if self.read_block_idx < wi:
                 if self.ring.try_read_block(self.read_block_idx, self.dsp_in):
+                    t_recv_ns = int(self.ring.block_t_ns[self.read_block_idx & self.ring.mask])
                     t0 = time.perf_counter_ns()
                     lo, md, hi = self.filter_bank.process(self.dsp_in)
                     rms_lo = block_rms(lo)
@@ -73,13 +74,10 @@ class DSPWorker(threading.Thread):
                     rms_hi = block_rms(hi)
                     self.smoother.update(rms_lo, rms_md, rms_hi)
                     self.auto_scaler.update(self.smoother.values, self.scaled_buf)
-                    raw = (
-                        float(self.smoother.values[0]),
-                        float(self.smoother.values[1]),
-                        float(self.smoother.values[2]),
-                    )
-                    scaled = (float(self.scaled_buf[0]), float(self.scaled_buf[1]), float(self.scaled_buf[2]))
-                    self.features_store.publish(raw, scaled)
+                    # Pass numpy refs straight through; FeatureStore copies
+                    # into its own preallocated buffers under the lock so we
+                    # don't allocate per-block tuples here.
+                    self.features_store.publish(self.smoother.values, self.scaled_buf, t_recv_ns)
                     try:
                         self.on_publish()
                     except Exception as e:

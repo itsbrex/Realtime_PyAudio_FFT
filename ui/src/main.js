@@ -74,24 +74,65 @@ onError((reason) => {
 
 // ----- Perf panel rendering -----
 const PERF_ROWS = [
-  { key: "cb",  label: "cb"  },
-  { key: "dsp", label: "dsp" },
-  { key: "fft", label: "fft" },
-  { key: "ws",  label: "ws"  },
+  { key: "lmh_e2e", label: "lmh e2e", tooltip: [
+      "**End-to-end L/M/H latency.** Wall-clock time between the audio callback receiving an audio block and the corresponding `/audio/lmh` packet being dispatched over OSC.",
+      "",
+      "Includes: ring write, DSP worker wakeup + filter/RMS/smoother/auto-scaler, asyncio sender hop, and the OSC UDP send call.",
+      "",
+      "*Excludes* the PortAudio input buffer fill itself (~one block) and any kernel/driver delay before the callback fires.",
+      "",
+      "Numbers are `avg / p95 ms` (same convention as the other rows). The bar is scaled against one audio block period — 100% = one block of latency.",
+    ].join("\n") },
+  { key: "fft_e2e", label: "fft e2e", tooltip: [
+      "**End-to-end FFT latency.** Wall-clock time between the audio block that *completes* an FFT hop landing in the ring and the corresponding `/audio/fft` packet being dispatched over OSC.",
+      "",
+      "Includes: FFT worker wakeup, windowed rfft + log-binning + post-processing, asyncio sender hop, and the OSC UDP send call.",
+      "",
+      "Only sampled when an `/audio/fft` packet actually goes out. The ENABLE toggle drives both FFT computation and OSC transmission, so this row is greyed out exactly when FFT is off.",
+      "",
+      "Numbers are `avg / p95 ms`. The bar is scaled against one hop period — 100% = one hop of latency.",
+    ].join("\n") },
+  { key: "cb",  label: "cb",  tooltip: [
+      "**PortAudio callback cost.** Time spent inside the audio C-thread callback per audio block (mono-mix + ring write + event signal).",
+      "",
+      "Numbers are `avg / p95 ms`. Bar is scaled against one audio block period.",
+    ].join("\n") },
+  { key: "dsp", label: "dsp", tooltip: [
+      "**DSP worker cost.** Time spent per block in the L/M/H pipeline: IIR bandpass, RMS, exponential smoother, auto-scaler, store publish.",
+      "",
+      "Numbers are `avg / p95 ms`. Bar is scaled against one audio block period.",
+    ].join("\n") },
+  { key: "fft", label: "fft", tooltip: [
+      "**FFT worker cost.** Time spent per hop: window read, Hann + rfft, log-bin aggregation, per-bin post-processing, store publish.",
+      "",
+      "Numbers are `avg / p95 ms`. Bar is scaled against one hop period.",
+    ].join("\n") },
+  { key: "ws",  label: "ws",  tooltip: [
+      "**WebSocket broadcast cost.** Time spent assembling and queueing one snapshot fan-out (JSON L/M/H + binary FFT) to all connected clients.",
+      "",
+      "Numbers are `avg / p95 ms`. Bar is scaled against one snapshot interval (`1 / ws_snapshot_hz`).",
+    ].join("\n") },
 ];
-const BROWSER_ROWS = ["raf", "lines", "bars", "scene", "fft"];
+const BROWSER_ROWS = [
+  { key: "raf", tooltip: [
+      "**Browser inter-draw interval.** Wall-clock time between consecutive canvas redraws. Throttled to the UI refresh rate slider.",
+      "",
+      "Numbers are `avg / p95 ms`. Bar shows how far the average exceeds the target frame period (0% = on target).",
+    ].join("\n") },
+];
 const perfContainer = document.getElementById("perf-rows");
 
 function ensurePerfRows() {
   if (perfContainer.children.length > 0) return;
-  for (const r of PERF_ROWS) addPerfRow(r.key, r.label);
-  for (const k of BROWSER_ROWS) addPerfRow("b_" + k, k);
+  for (const r of PERF_ROWS) addPerfRow(r.key, r.label, r.tooltip);
+  for (const r of BROWSER_ROWS) addPerfRow("b_" + r.key, r.key, r.tooltip);
 }
 
-function addPerfRow(id, label) {
+function addPerfRow(id, label, tooltip) {
   const row = document.createElement("div");
   row.className = "perf-row";
   row.id = "perf-" + id;
+  if (tooltip) row.setAttribute("data-tooltip", tooltip);
   row.innerHTML = `<span>${label}</span><div class="perf-bar"><div class="perf-bar-fill"></div></div><span class="perf-num">- / -</span>`;
   perfContainer.appendChild(row);
 }
@@ -106,7 +147,8 @@ function setPerfRow(id, avg_ms, p95_ms, load_pct, disabled) {
   fill.classList.remove("amber", "red");
   if (load_pct >= 80) fill.classList.add("red");
   else if (load_pct >= 50) fill.classList.add("amber");
-  num.textContent = `${avg_ms.toFixed(2)} / ${p95_ms.toFixed(2)} ms`;
+  const fmt = (x) => (x >= 10 ? x.toFixed(1) : x.toFixed(2));
+  num.textContent = `${fmt(avg_ms)} / ${fmt(p95_ms)} ms`;
 }
 
 function renderPerfPanel() {
@@ -115,8 +157,8 @@ function renderPerfPanel() {
   if (p) {
     for (const r of PERF_ROWS) {
       const stage = p[r.key] || {};
-      setPerfRow(r.key, stage.avg_ms || 0, stage.p95_ms || 0, stage.load_pct || 0,
-                 r.key === "fft" && stage.enabled === false);
+      const fftDisabled = (r.key === "fft" || r.key === "fft_e2e") && stage.enabled === false;
+      setPerfRow(r.key, stage.avg_ms || 0, stage.p95_ms || 0, stage.load_pct || 0, fftDisabled);
     }
   }
   // Browser side. raf_ms here is the inter-DRAW interval (we throttle draws
@@ -128,12 +170,6 @@ function renderPerfPanel() {
   const raf_p95 = p95Ring(store.raf_ms_ring);
   const raf_load = Math.max(0, (raf_avg - targetPeriod) / targetPeriod * 100);
   setPerfRow("b_raf", raf_avg, raf_p95, raf_load, false);
-  for (const k of ["lines", "bars", "scene", "fft"]) {
-    const v = store.viz_perf[k];
-    if (!v) continue;
-    const a = avgRing(v.ring), p95 = p95Ring(v.ring);
-    setPerfRow("b_" + k, a, p95, (a / targetPeriod) * 100, false);
-  }
 }
 
 // ----- RAF loop -----

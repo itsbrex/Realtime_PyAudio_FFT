@@ -78,6 +78,11 @@ class App:
         self.perf_dsp = np.zeros(128, dtype=np.int64)
         self.perf_fft = np.zeros(64,  dtype=np.int64)
         self.perf_ws  = np.zeros(32,  dtype=np.int64)
+        # End-to-end latency rings (audio-block receive -> OSC dispatch).
+        # Written by the OSC sender task on each successful send.
+        self.perf_lmh_e2e = np.zeros(128, dtype=np.int64)
+        self.perf_fft_e2e = np.zeros(64,  dtype=np.int64)
+        self.perf_e2e_idx = {"lmh": 0, "fft": 0}
 
         # ----- Async / loop bits -----
         self.loop: asyncio.AbstractEventLoop | None = None
@@ -256,6 +261,9 @@ class App:
                 get_db_floor=lambda: self.cfg.fft.db_floor,
                 get_send_raw_db=lambda: self.cfg.fft.send_raw_db,
                 get_master_gain=lambda: self.cfg.autoscale.master_gain,
+                perf_lmh_e2e=self.perf_lmh_e2e,
+                perf_fft_e2e=self.perf_fft_e2e,
+                perf_idx_state=self.perf_e2e_idx,
             ),
             name="osc-sender",
         )
@@ -422,6 +430,8 @@ class App:
         ds_avg, ds_p95 = self._ring_stats(self.perf_dsp, self.dsp_worker.perf_idx if self.dsp_worker else 0)
         ff_avg, ff_p95 = self._ring_stats(self.perf_fft, self.fft_worker.perf_idx if self.fft_worker else 0)
         ws_avg, ws_p95 = self._ring_stats(self.perf_ws,  self.ws.perf_idx if self.ws else 0)
+        lmh_e2e_avg, lmh_e2e_p95 = self._ring_stats(self.perf_lmh_e2e, self.perf_e2e_idx["lmh"])
+        fft_e2e_avg, fft_e2e_p95 = self._ring_stats(self.perf_fft_e2e, self.perf_e2e_idx["fft"])
 
         def load(avg_ms, period_ms):
             if period_ms <= 0:
@@ -437,6 +447,11 @@ class App:
                 "block_period_ms": block_period_ms,
                 "hop_period_ms": hop_period_ms,
                 "ws_period_ms": ws_period_ms,
+                "lmh_e2e": {"avg_ms": lmh_e2e_avg, "p95_ms": lmh_e2e_p95,
+                            "load_pct": load(lmh_e2e_avg, block_period_ms)},
+                "fft_e2e": {"avg_ms": fft_e2e_avg, "p95_ms": fft_e2e_p95,
+                            "load_pct": load(fft_e2e_avg, hop_period_ms),
+                            "enabled": self.fft_enabled.is_set() and bool(cfg.osc.send_fft)},
                 "cb":  {"avg_ms": cb_avg, "p95_ms": cb_p95, "load_pct": load(cb_avg, block_period_ms)},
                 "dsp": {"avg_ms": ds_avg, "p95_ms": ds_p95, "load_pct": load(ds_avg, block_period_ms)},
                 "fft": {"avg_ms": ff_avg, "p95_ms": ff_p95, "load_pct": load(ff_avg, hop_period_ms),
@@ -481,6 +496,9 @@ class App:
             self.fft_worker.reset()
             # zero perf rings so new sr's load is visible cleanly
             self.perf_cb.fill(0); self.perf_dsp.fill(0); self.perf_fft.fill(0); self.perf_ws.fill(0)
+            self.perf_lmh_e2e.fill(0); self.perf_fft_e2e.fill(0)
+            self.perf_e2e_idx["lmh"] = 0
+            self.perf_e2e_idx["fft"] = 0
             self.callback.perf_idx = 0
             self.dsp_worker.perf_idx = 0
             self.fft_worker.perf_idx = 0

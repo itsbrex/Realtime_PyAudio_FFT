@@ -25,9 +25,13 @@ import math
 import threading
 
 import numpy as np
-from scipy.ndimage import gaussian_filter1d
+from scipy.ndimage import convolve1d
 
 EPS = 1e-12
+# 10^x = exp(x · ln 10). On Pi 4 (and most platforms) np.exp is 3–5× faster
+# than np.power(10.0, x) for large vectors, since power is internally
+# log+mul+exp. We pre-multiply by ln(10)/20 once and call np.exp.
+_LN10_OVER_20 = math.log(10.0) / 20.0
 
 # Reference frequency for the spectral tilt: per-bin offset is zero AT this
 # frequency and grows ±tilt_db_per_oct dB per octave. 1 kHz puts the default
@@ -175,21 +179,41 @@ class FFTPostProcessor:
         self._right_vals = np.zeros(empty_idx.size, dtype=np.float64)
 
     def _recompute_smear(self) -> None:
-        """Convert peak_smear_oct → Gaussian sigma in *bin index* units.
+        """Convert peak_smear_oct → Gaussian sigma in *bin index* units AND
+        precompute the Gaussian kernel.
 
         The smear in process() uses mode='reflect', which is self-normalising
         at the edges (mirror-padded neighbours have the same kernel mass as
         the interior), so no per-bin normalisation weights are needed.
+
+        Precomputing the kernel avoids ~20-50µs of per-hop overhead on Pi 4
+        that scipy.ndimage.gaussian_filter1d spends rebuilding the kernel
+        each call. We use convolve1d with these weights instead, which is
+        otherwise identical (mode='reflect', truncate=4σ).
         """
         if self.peak_smear_oct <= 0.0:
             self._smear_sigma_bins = 0.0
+            self._smear_kernel = None
             return
         f_max = self.sr / 2.0
         if f_max <= self.f_min:
             self._smear_sigma_bins = 0.0
+            self._smear_kernel = None
             return
         bins_per_octave = self.n_bins / max(1e-6, math.log2(f_max / self.f_min))
-        self._smear_sigma_bins = float(self.peak_smear_oct * bins_per_octave)
+        sigma = float(self.peak_smear_oct * bins_per_octave)
+        self._smear_sigma_bins = sigma
+        if sigma <= 0.0:
+            self._smear_kernel = None
+            return
+        # Match scipy.ndimage.gaussian_filter1d defaults: truncate=4.0,
+        # radius = int(truncate*sigma + 0.5). The kernel is symmetric and
+        # normalised so the smear preserves total energy under interior bins.
+        radius = max(1, int(4.0 * sigma + 0.5))
+        x = np.arange(-radius, radius + 1, dtype=np.float64)
+        k = np.exp(-0.5 * (x / sigma) ** 2)
+        k /= k.sum()
+        self._smear_kernel = k
 
     def _build_per_bin_tau_for(self, tau_dict: dict) -> np.ndarray:
         anchors = []
@@ -324,9 +348,11 @@ class FFTPostProcessor:
             # 2. Pre-tilt (in dB) + dB→linear into _lin.
             #    interp_db is the UNTILTED clamped spectrum and is reused below
             #    for the strength<1 baseline; do not mutate it.
+            #    10^(x/20) ≡ exp(x · ln10/20); np.exp is several× faster than
+            #    np.power(10.0, ...) on ARM and x86.
             np.add(self.interp_db, self.tilt_db, out=self._lin)
-            np.multiply(self._lin, 1.0 / 20.0, out=self._lin)
-            np.power(10.0, self._lin, out=self._lin)
+            np.multiply(self._lin, _LN10_OVER_20, out=self._lin)
+            np.exp(self._lin, out=self._lin)
 
             # 3. Per-bin ASYMMETRIC EMA smoothing — fast attack, slow release,
             #    selected per bin by sign(diff). Same shape as the L/M/H
@@ -361,10 +387,11 @@ class FFTPostProcessor:
             # 4b. Spatial Gaussian smear of the peak across log-frequency bins.
             #     mode='reflect' is self-normalising at the edges (mirrored
             #     neighbours carry the same kernel mass), so no normalisation
-            #     divide is needed.
-            if self._smear_sigma_bins > 0.0:
-                gaussian_filter1d(self.peak_lin, sigma=self._smear_sigma_bins,
-                                  output=self.peak_smoothed, mode="reflect")
+            #     divide is needed. Kernel is precomputed in _recompute_smear
+            #     so the hot path is a single convolve1d call.
+            if self._smear_kernel is not None:
+                convolve1d(self.peak_lin, self._smear_kernel,
+                           output=self.peak_smoothed, mode="reflect")
             else:
                 np.copyto(self.peak_smoothed, self.peak_lin)
 

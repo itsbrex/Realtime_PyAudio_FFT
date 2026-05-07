@@ -59,6 +59,10 @@ class Dispatcher:
         else:
             self.app.fft_enabled.clear()
         self.app.cfg.fft.enabled = enabled
+        # The ENABLE toggle is the single user-facing FFT switch — keep OSC
+        # transmission in lockstep so consumers downstream get the FFT stream
+        # whenever the UI says FFT is on.
+        self.app.cfg.osc.send_fft = enabled
         self.app.persister.request(commit=True)
         return [], [{"type": "meta", **self.app.snapshot_meta()}]
 

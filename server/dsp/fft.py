@@ -108,6 +108,12 @@ class FFTWorker(threading.Thread):
         self._bin_empty_mask = self.bin_counts == 0
         self._empty_bin_idx = np.flatnonzero(self._bin_empty_mask)
         self._has_empty_bins = bool(self._empty_bin_idx.size > 0)
+        # Precomputed integer indices for valid rfft bins, plus a same-length
+        # f64 scratch. Lets the hot path do `np.take(power_buf, idx, out=...)`
+        # instead of `power_buf[bin_valid_mask]`, which allocates a fresh
+        # array on every hop.
+        self._valid_rfft_idx = np.flatnonzero(self.bin_valid_mask).astype(np.intp)
+        self._valid_power = np.zeros(self._valid_rfft_idx.size, dtype=np.float64)
         # Double-buffered f32 wire format. Each hop writes into the back buffer
         # and publishes that ref. Two-buffer alternation is safe because both
         # consumers (WS encoder via tobytes, OSC sender via tolist) drain the
@@ -171,6 +177,10 @@ class FFTWorker(threading.Thread):
                     continue
 
                 t0 = time.perf_counter_ns()
+                # The hop "becomes available" the instant the last block of the
+                # window lands; that's the latency clock's t=0 for FFT e2e.
+                last_block_idx = self.read_block_idx + self.n_blocks_per_window - 1
+                t_recv_ns = int(self.ring.block_t_ns[last_block_idx & self.ring.mask])
                 if not self.ring.try_read_window(self.read_block_idx, self.n_blocks_per_window, self.window_buf):
                     self.fft_drops += 1
                     self.read_block_idx = max(
@@ -189,9 +199,14 @@ class FFTWorker(threading.Thread):
                 # Mean-of-power log-bin aggregation: sum(power) per log bin /
                 # rfft-count per log bin. Mean-of-dB underweights peaks; this
                 # is energy-conserving.
+                # Gather valid rfft powers via np.take into a preallocated
+                # scratch — `power_buf[bin_valid_mask]` would allocate every
+                # hop. bincount itself still allocates the result; replacing
+                # it would require a sparse mat-vec, not worth the complexity.
+                np.take(self.power_buf, self._valid_rfft_idx, out=self._valid_power)
                 bins = np.bincount(
                     self.bin_idx_valid,
-                    weights=self.power_buf[self.bin_valid_mask],
+                    weights=self._valid_power,
                     minlength=self.n_bins,
                 )
                 if bins.shape[0] > self.n_bins:
@@ -215,7 +230,7 @@ class FFTWorker(threading.Thread):
                 processed = None
                 if self.post_processor is not None:
                     processed = self.post_processor.process(bins_f32)
-                self.fft_store.publish(bins_f32, processed)
+                self.fft_store.publish(bins_f32, processed, t_recv_ns)
                 self._wire_idx ^= 1
                 try:
                     self.on_publish()

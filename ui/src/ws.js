@@ -66,7 +66,11 @@ function onMsg(ev) {
     const buf = ev.data instanceof ArrayBuffer ? ev.data : null;
     if (buf) {
       const f32 = decodeFftBinary(buf);
-      if (f32) store.fft_bins = f32;
+      // Defensive: ignore stray FFT frames if the server has reported FFT as
+      // disabled. Shouldn't normally happen (the server gates its own send),
+      // but this guarantees the UI can never paint live bars while the
+      // toggle / sidepanel reflect the disabled state.
+      if (f32 && store.meta?.fft_enabled !== false) store.fft_bins = f32;
     }
     return;
   }
