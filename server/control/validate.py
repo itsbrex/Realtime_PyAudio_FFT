@@ -19,12 +19,18 @@ def _is_number(x):
     return isinstance(x, (int, float)) and not isinstance(x, bool)
 
 
-def _finite_float(x, name):
+def _finite_float(x, name, *, gt: float | None = None, ge: float | None = None):
+    """Coerce x to float and assert finite. Optional `gt` / `ge` bounds raise
+    a precise message when violated."""
     if not _is_number(x):
         raise ValueError(f"{name} must be numeric")
     v = float(x)
     if not math.isfinite(v):
         raise ValueError(f"{name} must be finite")
+    if gt is not None and v <= gt:
+        raise ValueError(f"{name} must be > {gt:g}")
+    if ge is not None and v < ge:
+        raise ValueError(f"{name} must be >= {ge:g}")
     return v
 
 
@@ -67,10 +73,7 @@ def validate_tau(tau_dict):
     for k, v in tau_dict.items():
         if k not in BAND_NAMES:
             raise ValueError(f"unknown band {k!r}")
-        f = _finite_float(v, f"tau[{k}]")
-        if f <= 0.0:
-            raise ValueError(f"tau[{k}] must be > 0")
-        out[k] = f
+        out[k] = _finite_float(v, f"tau[{k}]", gt=0.0)
     return out
 
 
@@ -86,15 +89,9 @@ def validate_autoscale(tau_attack_s=None, tau_release_s=None, noise_floor=None, 
                        master_gain=None):
     out = {}
     if tau_attack_s is not None:
-        v = _finite_float(tau_attack_s, "tau_attack_s")
-        if v <= 0.0:
-            raise ValueError("tau_attack_s must be > 0")
-        out["tau_attack_s"] = v
+        out["tau_attack_s"] = _finite_float(tau_attack_s, "tau_attack_s", gt=0.0)
     if tau_release_s is not None:
-        v = _finite_float(tau_release_s, "tau_release_s")
-        if v <= 0.0:
-            raise ValueError("tau_release_s must be > 0")
-        out["tau_release_s"] = v
+        out["tau_release_s"] = _finite_float(tau_release_s, "tau_release_s", gt=0.0)
     if noise_floor is not None:
         out["noise_floor"] = _finite_float(noise_floor, "noise_floor")
     if strength is not None:
@@ -117,10 +114,7 @@ def validate_peak_decay_per_s(v):
 
 
 def validate_ws_snapshot_hz(hz):
-    v = _finite_float(hz, "hz")
-    if v <= 0.0:
-        raise ValueError("hz must be > 0")
-    return int(round(v))
+    return int(round(_finite_float(hz, "hz", gt=0.0)))
 
 
 _PRESET_NAME_RE = re.compile(r"^[a-zA-Z0-9_\- ]+$")

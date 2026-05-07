@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import contextmanager
 
 import yaml
 
@@ -26,6 +27,26 @@ def _deep_merge(base: dict, overlay: dict) -> dict:
         else:
             out[k] = v
     return out
+
+
+class _SkipSection(Exception):
+    """Raised inside a preset section to silently skip without logging
+    (used when the section has no relevant keys to apply)."""
+
+
+@contextmanager
+def _preset_section(label: str, applied: list[str]):
+    """Run a preset-section block. On success, append `label` to `applied`.
+    `_SkipSection` skips silently; any other Exception is logged and
+    swallowed so one bad section doesn't fail the whole preset."""
+    try:
+        yield
+    except _SkipSection:
+        return
+    except Exception as e:
+        log.warning("preset %s invalid: %s", label, e)
+        return
+    applied.append(label)
 
 
 class Dispatcher:
@@ -73,17 +94,13 @@ class Dispatcher:
         commit = bool(msg.get("commit", True))
         sr = self.app.current_sr()
         lo, hi = V.validate_band(band, msg.get("lo_hz"), msg.get("hi_hz"), sr)
-        # Mutate cfg, then schedule a debounced retune that reads cfg at fire time.
         getattr(self.app.cfg.dsp, band).lo_hz = lo
         getattr(self.app.cfg.dsp, band).hi_hz = hi
+        # IIR retune is debounced (50ms); pipeline knobs that depend on the
+        # band edges (per-band linear tilt, bandwidth-aware noise subtraction,
+        # FFT-postprocessor's per-bin smoothing tau anchors) update synchronously.
         self.app.schedule_filter_retune()
-        # The FFT post-processor's per-bin smoothing tau is anchored on band
-        # geometric centers — keep it in sync.
-        if self.app.fft_postprocessor is not None:
-            self.app.fft_postprocessor.update_bands(self.app.snapshot_meta()["bands"])
-        # AutoScaler's per-band linear pre-tilt + bandwidth-aware noise
-        # subtraction both depend on the band edges — keep in sync.
-        self.app.auto_scaler.set_bands(self.app._bands_tuple_dict())
+        self.app.apply_bands()
         self.app.persister.request(commit=commit)
         return [], [{"type": "meta", **self.app.snapshot_meta()}]
 
@@ -95,11 +112,7 @@ class Dispatcher:
             self.app.cfg.dsp.tau = {**self.app.cfg.dsp.tau, **tau}
         if tau_atk:
             self.app.cfg.dsp.tau_attack = {**self.app.cfg.dsp.tau_attack, **tau_atk}
-        self.app.smoother.set_tau(self.app.cfg.dsp.tau, self.app.cfg.dsp.tau_attack)
-        if self.app.fft_postprocessor is not None:
-            self.app.fft_postprocessor.update_smoothing(
-                self.app.cfg.dsp.tau, self.app.cfg.dsp.tau_attack,
-            )
+        self.app.apply_smoothing()
         self.app.persister.request(commit=commit)
         return [], [{"type": "meta", **self.app.snapshot_meta()}]
 
@@ -112,29 +125,7 @@ class Dispatcher:
             strength=msg.get("strength"),
             master_gain=msg.get("master_gain"),
         )
-        if "tau_attack_s" in ok or "tau_release_s" in ok:
-            atk = ok.get("tau_attack_s", self.app.cfg.autoscale.tau_attack_s)
-            rel = ok.get("tau_release_s", self.app.cfg.autoscale.tau_release_s)
-            self.app.auto_scaler.set_taus(atk, rel)
-            if "tau_attack_s" in ok:
-                self.app.cfg.autoscale.tau_attack_s = ok["tau_attack_s"]
-            if "tau_release_s" in ok:
-                self.app.cfg.autoscale.tau_release_s = ok["tau_release_s"]
-        if "noise_floor" in ok:
-            self.app.auto_scaler.set_noise_floor(ok["noise_floor"])
-            self.app.cfg.autoscale.noise_floor = ok["noise_floor"]
-        if "strength" in ok:
-            self.app.auto_scaler.set_strength(ok["strength"])
-            self.app.cfg.autoscale.strength = ok["strength"]
-        if "master_gain" in ok:
-            self.app.cfg.autoscale.master_gain = ok["master_gain"]
-        if self.app.fft_postprocessor is not None:
-            self.app.fft_postprocessor.update_autoscale(
-                tau_attack_s=ok.get("tau_attack_s"),
-                tau_release_s=ok.get("tau_release_s"),
-                noise_floor=ok.get("noise_floor"),
-                strength=ok.get("strength"),
-            )
+        self.app.apply_autoscale(ok)
         self.app.persister.request(commit=commit)
         return [], [{"type": "meta", **self.app.snapshot_meta()}]
 
@@ -152,12 +143,7 @@ class Dispatcher:
 
     async def _set_n_fft_bins(self, msg):
         n = V.validate_n_fft_bins(msg.get("n"))
-        self.app.fft_worker.reconfigure(n_bins=n)
-        self.app.cfg.fft.n_bins = n
-        # n_bins controls the FFT-viz log-bin density; the L/M/H AutoScaler
-        # caps its noise budget at the per-band log-bin count, so keep it in
-        # sync.
-        self.app.auto_scaler.set_fft_geometry(n_bins=n)
+        self.app.apply_fft_n_bins(n)
         self.app.persister.request(commit=True)
         return [], [{"type": "meta", **self.app.snapshot_meta()}]
 
@@ -202,41 +188,33 @@ class Dispatcher:
 
         sr = self.app.current_sr()
         applied: list[str] = []
-        # dsp
         d = data.get("dsp", {}) or {}
-        bands_raw = {k: d.get(k) for k in ("low", "mid", "high") if isinstance(d.get(k), dict)}
-        if len(bands_raw) == 3:
-            try:
-                ok = V.validate_bands(bands_raw, sr)
-                for name, (lo, hi) in ok.items():
-                    cfg_band = getattr(self.app.cfg.dsp, name)
-                    cfg_band.lo_hz, cfg_band.hi_hz = lo, hi
-                self.app.schedule_filter_retune()
-                if self.app.fft_postprocessor is not None:
-                    self.app.fft_postprocessor.update_bands(self.app.snapshot_meta()["bands"])
-                self.app.auto_scaler.set_bands(self.app._bands_tuple_dict())
-                applied.append("dsp.bands")
-            except ValueError as e:
-                log.warning("preset dsp bands invalid: %s", e)
-        if "tau" in d or "tau_attack" in d:
-            try:
-                if "tau" in d:
-                    tau = V.validate_tau(d["tau"])
-                    self.app.cfg.dsp.tau = {**self.app.cfg.dsp.tau, **tau}
-                if "tau_attack" in d:
-                    tau_atk = V.validate_tau(d["tau_attack"])
-                    self.app.cfg.dsp.tau_attack = {**self.app.cfg.dsp.tau_attack, **tau_atk}
-                self.app.smoother.set_tau(self.app.cfg.dsp.tau, self.app.cfg.dsp.tau_attack)
-                if self.app.fft_postprocessor is not None:
-                    self.app.fft_postprocessor.update_smoothing(
-                        self.app.cfg.dsp.tau, self.app.cfg.dsp.tau_attack,
-                    )
-                applied.append("dsp.tau")
-            except ValueError as e:
-                log.warning("preset dsp.tau / dsp.tau_attack invalid: %s", e)
-        # autoscale
+        f = data.get("fft", {}) or {}
         a = data.get("autoscale", {}) or {}
-        try:
+
+        with _preset_section("dsp.bands", applied):
+            bands_raw = {k: d.get(k) for k in ("low", "mid", "high") if isinstance(d.get(k), dict)}
+            if len(bands_raw) != 3:
+                raise _SkipSection
+            ok = V.validate_bands(bands_raw, sr)
+            for nm, (lo, hi) in ok.items():
+                cfg_band = getattr(self.app.cfg.dsp, nm)
+                cfg_band.lo_hz, cfg_band.hi_hz = lo, hi
+            self.app.schedule_filter_retune()
+            self.app.apply_bands()
+
+        with _preset_section("dsp.tau", applied):
+            if "tau" not in d and "tau_attack" not in d:
+                raise _SkipSection
+            if "tau" in d:
+                tau = V.validate_tau(d["tau"])
+                self.app.cfg.dsp.tau = {**self.app.cfg.dsp.tau, **tau}
+            if "tau_attack" in d:
+                tau_atk = V.validate_tau(d["tau_attack"])
+                self.app.cfg.dsp.tau_attack = {**self.app.cfg.dsp.tau_attack, **tau_atk}
+            self.app.apply_smoothing()
+
+        with _preset_section("autoscale", applied):
             ok = V.validate_autoscale(
                 tau_attack_s=a.get("tau_attack_s"),
                 tau_release_s=a.get("tau_release_s"),
@@ -244,83 +222,33 @@ class Dispatcher:
                 strength=a.get("strength"),
                 master_gain=a.get("master_gain"),
             )
-            if "tau_attack_s" in ok or "tau_release_s" in ok:
-                atk = ok.get("tau_attack_s", self.app.cfg.autoscale.tau_attack_s)
-                rel = ok.get("tau_release_s", self.app.cfg.autoscale.tau_release_s)
-                self.app.auto_scaler.set_taus(atk, rel)
-                if "tau_attack_s" in ok:
-                    self.app.cfg.autoscale.tau_attack_s = ok["tau_attack_s"]
-                if "tau_release_s" in ok:
-                    self.app.cfg.autoscale.tau_release_s = ok["tau_release_s"]
-            if "noise_floor" in ok:
-                self.app.auto_scaler.set_noise_floor(ok["noise_floor"])
-                self.app.cfg.autoscale.noise_floor = ok["noise_floor"]
-            if "strength" in ok:
-                self.app.auto_scaler.set_strength(ok["strength"])
-                self.app.cfg.autoscale.strength = ok["strength"]
-            if "master_gain" in ok:
-                self.app.cfg.autoscale.master_gain = ok["master_gain"]
-            if ok and self.app.fft_postprocessor is not None:
-                self.app.fft_postprocessor.update_autoscale(
-                    tau_attack_s=ok.get("tau_attack_s"),
-                    tau_release_s=ok.get("tau_release_s"),
-                    noise_floor=ok.get("noise_floor"),
-                    strength=ok.get("strength"),
-                )
-            if ok:
-                applied.append("autoscale")
-        except ValueError as e:
-            log.warning("preset autoscale invalid: %s", e)
-        # fft view
-        f = data.get("fft", {}) or {}
-        if "n_bins" in f:
-            try:
-                n = V.validate_n_fft_bins(f["n_bins"])
-                self.app.fft_worker.reconfigure(n_bins=n)
-                self.app.cfg.fft.n_bins = n
-                self.app.auto_scaler.set_fft_geometry(n_bins=n)
-                applied.append("fft.n_bins")
-            except ValueError as e:
-                log.warning("preset fft.n_bins invalid: %s", e)
-        # window/hop/f_min if specified and reasonable
-        ws = f.get("window_size") if isinstance(f.get("window_size"), int) else None
-        hop = f.get("hop") if isinstance(f.get("hop"), int) else None
-        fmin = f.get("f_min") if isinstance(f.get("f_min"), (int, float)) else None
-        if ws or hop or fmin:
-            try:
-                self.app.fft_worker.reconfigure(window_size=ws, hop=hop, f_min=fmin)
-                if ws: self.app.cfg.fft.window_size = ws
-                if hop: self.app.cfg.fft.hop = hop
-                if fmin is not None: self.app.cfg.fft.f_min = float(fmin)
-                # Window resize changes Δf_lin = sr/n_fft, which scales the
-                # K_lin term in the L/M/H AutoScaler's noise budget. f_min
-                # changes log_bins_per_octave, which scales the N_log cap.
-                if ws:
-                    self.app.auto_scaler.set_n_fft_window(ws)
-                if fmin is not None:
-                    self.app.auto_scaler.set_fft_geometry(f_min=float(fmin))
-                applied.append("fft.window")
-            except Exception as e:
-                log.warning("preset fft window/hop invalid: %s", e)
-        if "peak_smear_oct" in f:
-            try:
-                v = V.validate_peak_smear_oct(f["peak_smear_oct"])
-                self.app.cfg.fft.peak_smear_oct = v
-                if self.app.fft_postprocessor is not None:
-                    self.app.fft_postprocessor.update_smear(v)
-                applied.append("fft.peak_smear_oct")
-            except ValueError as e:
-                log.warning("preset fft.peak_smear_oct invalid: %s", e)
-        if "tilt_db_per_oct" in f:
-            try:
-                v = V.validate_fft_tilt_db_per_oct(f["tilt_db_per_oct"])
-                self.app.cfg.fft.tilt_db_per_oct = v
-                if self.app.fft_postprocessor is not None:
-                    self.app.fft_postprocessor.update_tilt(v)
-                self.app.auto_scaler.set_tilt(v)
-                applied.append("fft.tilt_db_per_oct")
-            except ValueError as e:
-                log.warning("preset fft.tilt_db_per_oct invalid: %s", e)
+            if not ok:
+                raise _SkipSection
+            self.app.apply_autoscale(ok)
+
+        with _preset_section("fft.n_bins", applied):
+            if "n_bins" not in f:
+                raise _SkipSection
+            self.app.apply_fft_n_bins(V.validate_n_fft_bins(f["n_bins"]))
+
+        with _preset_section("fft.window", applied):
+            ws = f.get("window_size") if isinstance(f.get("window_size"), int) else None
+            hop = f.get("hop") if isinstance(f.get("hop"), int) else None
+            fmin = f.get("f_min") if isinstance(f.get("f_min"), (int, float)) else None
+            if not (ws or hop or fmin):
+                raise _SkipSection
+            self.app.apply_fft_window(window_size=ws, hop=hop,
+                                      f_min=float(fmin) if fmin is not None else None)
+
+        with _preset_section("fft.peak_smear_oct", applied):
+            if "peak_smear_oct" not in f:
+                raise _SkipSection
+            self.app.apply_fft_peak_smear(V.validate_peak_smear_oct(f["peak_smear_oct"]))
+
+        with _preset_section("fft.tilt_db_per_oct", applied):
+            if "tilt_db_per_oct" not in f:
+                raise _SkipSection
+            self.app.apply_fft_tilt(V.validate_fft_tilt_db_per_oct(f["tilt_db_per_oct"]))
 
         if not applied:
             raise ValueError(f"preset {name!r} produced no valid fields")
@@ -336,9 +264,7 @@ class Dispatcher:
     async def _set_fft_peak_smear(self, msg):
         commit = bool(msg.get("commit", True))
         v = V.validate_peak_smear_oct(msg.get("peak_smear_oct"))
-        self.app.cfg.fft.peak_smear_oct = v
-        if self.app.fft_postprocessor is not None:
-            self.app.fft_postprocessor.update_smear(v)
+        self.app.apply_fft_peak_smear(v)
         self.app.persister.request(commit=commit)
         return [], [{"type": "meta", **self.app.snapshot_meta()}]
 
@@ -359,11 +285,7 @@ class Dispatcher:
     async def _set_fft_tilt(self, msg):
         commit = bool(msg.get("commit", True))
         v = V.validate_fft_tilt_db_per_oct(msg.get("tilt_db_per_oct"))
-        self.app.cfg.fft.tilt_db_per_oct = v
-        if self.app.fft_postprocessor is not None:
-            self.app.fft_postprocessor.update_tilt(v)
-        # Mirror to L/M/H AutoScaler so its per-band linear pre-tilt updates too.
-        self.app.auto_scaler.set_tilt(v)
+        self.app.apply_fft_tilt(v)
         self.app.persister.request(commit=commit)
         return [], [{"type": "meta", **self.app.snapshot_meta()}]
 

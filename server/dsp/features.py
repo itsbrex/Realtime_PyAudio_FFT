@@ -12,6 +12,8 @@ import math
 
 import numpy as np
 
+from ._math import EPS, LN10_OVER_20, tau_to_alpha, tilt_db_curve
+
 
 def block_rms(x: np.ndarray) -> float:
     """RMS of a 1-D buffer; returns Python float.
@@ -52,19 +54,11 @@ class ExpSmoother:
     def set_tau(self, tau: dict, tau_attack: dict) -> None:
         dt = self.blocksize / self.sr
         self._alpha_release = np.array(
-            [
-                1.0 - math.exp(-dt / max(float(tau["low"]),  1e-3)),
-                1.0 - math.exp(-dt / max(float(tau["mid"]),  1e-3)),
-                1.0 - math.exp(-dt / max(float(tau["high"]), 1e-3)),
-            ],
+            [tau_to_alpha(dt, tau[k]) for k in ("low", "mid", "high")],
             dtype=np.float64,
         )
         self._alpha_attack = np.array(
-            [
-                1.0 - math.exp(-dt / max(float(tau_attack["low"]),  1e-3)),
-                1.0 - math.exp(-dt / max(float(tau_attack["mid"]),  1e-3)),
-                1.0 - math.exp(-dt / max(float(tau_attack["high"]), 1e-3)),
-            ],
+            [tau_to_alpha(dt, tau_attack[k]) for k in ("low", "mid", "high")],
             dtype=np.float64,
         )
 
@@ -87,9 +81,6 @@ class ExpSmoother:
     def reset(self) -> None:
         self._values.fill(0.0)
 
-
-TILT_REF_HZ = 1000.0
-EPS = 1e-12
 
 _DEFAULT_BANDS = {"low": (40.0, 250.0), "mid": (250.0, 2000.0), "high": (2000.0, 16000.0)}
 
@@ -195,8 +186,10 @@ class AutoScaler:
         if self.tilt_db_per_oct == 0.0:
             self._tilt_lin.fill(1.0)
             return
-        tilt_db = self.tilt_db_per_oct * np.log2(np.maximum(self._band_centers, 1e-3) / TILT_REF_HZ)
-        np.power(10.0, tilt_db / 20.0, out=self._tilt_lin)
+        # 10^(tilt_db/20) ≡ exp(tilt_db · LN10_OVER_20); avoids np.power's
+        # internal log+mul+exp.
+        tilt_db = tilt_db_curve(self._band_centers, self.tilt_db_per_oct)
+        np.exp(tilt_db * LN10_OVER_20, out=self._tilt_lin)
 
     def _recompute_per_bin_factor(self) -> None:
         # K_lin = BW · n_fft_window / sr — count of linear rfft bins in the
@@ -249,8 +242,8 @@ class AutoScaler:
 
     def set_taus(self, tau_attack_s: float, tau_release_s: float) -> None:
         dt = self.blocksize / self.sr
-        self._a_atk = 1.0 - math.exp(-dt / max(float(tau_attack_s), 1e-3))
-        self._a_rel = 1.0 - math.exp(-dt / max(float(tau_release_s), 1e-3))
+        self._a_atk = tau_to_alpha(dt, tau_attack_s)
+        self._a_rel = tau_to_alpha(dt, tau_release_s)
         self.tau_attack_s = float(tau_attack_s)
         self.tau_release_s = float(tau_release_s)
 

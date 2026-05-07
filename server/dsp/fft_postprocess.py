@@ -27,17 +27,14 @@ import threading
 import numpy as np
 from scipy.ndimage import convolve1d
 
-EPS = 1e-12
-# 10^x = exp(x · ln 10). On Pi 4 (and most platforms) np.exp is 3–5× faster
-# than np.power(10.0, x) for large vectors, since power is internally
-# log+mul+exp. We pre-multiply by ln(10)/20 once and call np.exp.
-_LN10_OVER_20 = math.log(10.0) / 20.0
-
-# Reference frequency for the spectral tilt: per-bin offset is zero AT this
-# frequency and grows ±tilt_db_per_oct dB per octave. 1 kHz puts the default
-# tilt in the middle of the musical range — bins below are pulled down, bins
-# above are pushed up — so a single global noise gate fires uniformly.
-TILT_REF_HZ = 1000.0
+from ._math import (
+    EPS,
+    LN10_OVER_20,
+    log_bin_centers,
+    tau_to_alpha,
+    tau_to_alpha_into,
+    tilt_db_curve,
+)
 
 
 class FFTPostProcessor:
@@ -114,14 +111,8 @@ class FFTPostProcessor:
         self._warmed = False
 
     def _build_tilt_db(self) -> np.ndarray:
-        n = self.n_bins
-        log_fmin = math.log10(max(self.f_min, 1e-3))
-        f_max = self.sr / 2.0
-        log_span = max(1e-6, math.log10(f_max) - log_fmin)
-        idx = np.arange(n, dtype=np.float64)
-        log_f = log_fmin + ((idx + 0.5) / n) * log_span
-        f_center = np.power(10.0, log_f)
-        return (self.tilt_db_per_oct * np.log2(f_center / TILT_REF_HZ)).astype(np.float64)
+        f_center = log_bin_centers(self.n_bins, self.f_min, self.sr / 2.0)
+        return tilt_db_curve(f_center, self.tilt_db_per_oct).astype(np.float64)
 
     def _build_sentinel_interp_lut(self, db_in: np.ndarray) -> None:
         """Detect empty-bin positions (sentinel = -1000 dB) and precompute a
@@ -222,10 +213,7 @@ class FFTPostProcessor:
             cen = math.sqrt(float(b["lo_hz"]) * float(b["hi_hz"]))
             anchors.append((math.log10(max(cen, 1e-3)), float(tau_dict[name])))
         anchors.sort(key=lambda x: x[0])
-        log_fmin = math.log10(max(self.f_min, 1e-3))
-        f_max = self.sr / 2.0
-        log_span = max(1e-6, math.log10(f_max) - log_fmin)
-        log_f = log_fmin + ((np.arange(self.n_bins, dtype=np.float64) + 0.5) / self.n_bins) * log_span
+        log_f = np.log10(log_bin_centers(self.n_bins, self.f_min, self.sr / 2.0))
         xp = np.array([a[0] for a in anchors], dtype=np.float64)
         fp = np.array([a[1] for a in anchors], dtype=np.float64)
         # np.interp clamps to fp[0]/fp[-1] outside [xp[0], xp[-1]] — exactly the
@@ -236,22 +224,12 @@ class FFTPostProcessor:
         h = self.hop_period_s
         # Per-bin signal smoother: separate attack / release alphas, selected
         # by sign(diff) per bin in the hot path.
-        np.subtract(0.0, h, out=self.alpha_smooth_release)
-        np.divide(self.alpha_smooth_release,
-                  np.maximum(self.tau_per_bin, 1e-3),
-                  out=self.alpha_smooth_release)
-        np.exp(self.alpha_smooth_release, out=self.alpha_smooth_release)
-        np.subtract(1.0, self.alpha_smooth_release, out=self.alpha_smooth_release)
-        np.subtract(0.0, h, out=self.alpha_smooth_attack)
-        np.divide(self.alpha_smooth_attack,
-                  np.maximum(self.tau_attack_per_bin, 1e-3),
-                  out=self.alpha_smooth_attack)
-        np.exp(self.alpha_smooth_attack, out=self.alpha_smooth_attack)
-        np.subtract(1.0, self.alpha_smooth_attack, out=self.alpha_smooth_attack)
-        # Peak-follower alphas (still scalar — single tau_attack_s/tau_release_s
+        tau_to_alpha_into(h, self.tau_per_bin, self.alpha_smooth_release)
+        tau_to_alpha_into(h, self.tau_attack_per_bin, self.alpha_smooth_attack)
+        # Peak-follower alphas (scalar — single tau_attack_s/tau_release_s
         # shared with the L/M/H AutoScaler).
-        self.alpha_attack = 1.0 - math.exp(-h / max(self.tau_attack_s, 1e-3))
-        self.alpha_release = 1.0 - math.exp(-h / max(self.tau_release_s, 1e-3))
+        self.alpha_attack = tau_to_alpha(h, self.tau_attack_s)
+        self.alpha_release = tau_to_alpha(h, self.tau_release_s)
 
     # ----------------- live retune (asyncio thread) -----------------
     def reset(self) -> None:
@@ -351,7 +329,7 @@ class FFTPostProcessor:
             #    10^(x/20) ≡ exp(x · ln10/20); np.exp is several× faster than
             #    np.power(10.0, ...) on ARM and x86.
             np.add(self.interp_db, self.tilt_db, out=self._lin)
-            np.multiply(self._lin, _LN10_OVER_20, out=self._lin)
+            np.multiply(self._lin, LN10_OVER_20, out=self._lin)
             np.exp(self._lin, out=self._lin)
 
             # 3. Per-bin ASYMMETRIC EMA smoothing — fast attack, slow release,

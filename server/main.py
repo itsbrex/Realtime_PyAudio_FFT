@@ -115,6 +115,97 @@ class App:
             "high": (d.high.lo_hz, d.high.hi_hz),
         }
 
+    def _bands_meta_dict(self) -> dict:
+        """{lo_hz, hi_hz}-shape used by FFTPostProcessor + snapshot_meta."""
+        d = self.cfg.dsp
+        return {
+            "low":  {"lo_hz": d.low.lo_hz,  "hi_hz": d.low.hi_hz},
+            "mid":  {"lo_hz": d.mid.lo_hz,  "hi_hz": d.mid.hi_hz},
+            "high": {"lo_hz": d.high.lo_hz, "hi_hz": d.high.hi_hz},
+        }
+
+    # ----------------- pipeline-bus: fan settings out to both pipelines -----
+    # Callers mutate cfg first (they own the validated values), then call
+    # one apply_* to push the change into AutoScaler + FFTPostProcessor in
+    # lockstep. Hides the "is fft_postprocessor None?" guards and the dual
+    # set/update API so both handlers and the preset loader stay terse.
+
+    def apply_bands(self) -> None:
+        """Push current cfg.dsp band edges into both pipelines."""
+        self.auto_scaler.set_bands(self._bands_tuple_dict())
+        if self.fft_postprocessor is not None:
+            self.fft_postprocessor.update_bands(self._bands_meta_dict())
+
+    def apply_smoothing(self) -> None:
+        """Push current cfg.dsp.tau / tau_attack into both pipelines."""
+        self.smoother.set_tau(self.cfg.dsp.tau, self.cfg.dsp.tau_attack)
+        if self.fft_postprocessor is not None:
+            self.fft_postprocessor.update_smoothing(
+                self.cfg.dsp.tau, self.cfg.dsp.tau_attack,
+            )
+
+    def apply_autoscale(self, ok: dict) -> None:
+        """Apply a validated autoscale-update dict to cfg and both pipelines.
+
+        `ok` may contain any subset of {tau_attack_s, tau_release_s,
+        noise_floor, strength, master_gain}. Missing keys are unchanged.
+        master_gain is config-only (read live by the OSC sender).
+        """
+        a = self.cfg.autoscale
+        for k in ("tau_attack_s", "tau_release_s", "noise_floor", "strength", "master_gain"):
+            if k in ok:
+                setattr(a, k, ok[k])
+        if "tau_attack_s" in ok or "tau_release_s" in ok:
+            self.auto_scaler.set_taus(a.tau_attack_s, a.tau_release_s)
+        if "noise_floor" in ok:
+            self.auto_scaler.set_noise_floor(a.noise_floor)
+        if "strength" in ok:
+            self.auto_scaler.set_strength(a.strength)
+        if self.fft_postprocessor is not None and any(
+            k in ok for k in ("tau_attack_s", "tau_release_s", "noise_floor", "strength")
+        ):
+            self.fft_postprocessor.update_autoscale(
+                tau_attack_s=ok.get("tau_attack_s"),
+                tau_release_s=ok.get("tau_release_s"),
+                noise_floor=ok.get("noise_floor"),
+                strength=ok.get("strength"),
+            )
+
+    def apply_fft_n_bins(self, n: int) -> None:
+        self.cfg.fft.n_bins = n
+        self.fft_worker.reconfigure(n_bins=n)
+        # n_bins controls FFT-viz log-bin density; AutoScaler caps its
+        # noise budget at the per-band log-bin count, so keep it in sync.
+        self.auto_scaler.set_fft_geometry(n_bins=n)
+
+    def apply_fft_window(self, *, window_size: int | None = None,
+                         hop: int | None = None, f_min: float | None = None) -> None:
+        """Reconfigure FFT window/hop/f_min and mirror knobs that depend on
+        the resulting Δf_lin / log-bins-per-octave into AutoScaler."""
+        self.fft_worker.reconfigure(window_size=window_size, hop=hop, f_min=f_min)
+        if window_size is not None:
+            self.cfg.fft.window_size = window_size
+            # Δf_lin = sr/n_fft scales the K_lin term in noise budget.
+            self.auto_scaler.set_n_fft_window(window_size)
+        if hop is not None:
+            self.cfg.fft.hop = hop
+        if f_min is not None:
+            self.cfg.fft.f_min = float(f_min)
+            # f_min changes log_bins_per_octave -> N_log cap.
+            self.auto_scaler.set_fft_geometry(f_min=float(f_min))
+
+    def apply_fft_tilt(self, v: float) -> None:
+        self.cfg.fft.tilt_db_per_oct = v
+        # AutoScaler always exists; FFTPostProcessor may not.
+        self.auto_scaler.set_tilt(v)
+        if self.fft_postprocessor is not None:
+            self.fft_postprocessor.update_tilt(v)
+
+    def apply_fft_peak_smear(self, v: float) -> None:
+        self.cfg.fft.peak_smear_oct = v
+        if self.fft_postprocessor is not None:
+            self.fft_postprocessor.update_smear(v)
+
     def _build_pipeline_for_sr(self, sr: float) -> None:
         cfg = self.cfg
         self.filter_bank = FilterBank(
@@ -204,11 +295,7 @@ class App:
             n_bins=cfg.fft.n_bins,
             f_min=cfg.fft.f_min,
             sr=self.stream.samplerate,
-            bands={
-                "low":  {"lo_hz": cfg.dsp.low.lo_hz,  "hi_hz": cfg.dsp.low.hi_hz},
-                "mid":  {"lo_hz": cfg.dsp.mid.lo_hz,  "hi_hz": cfg.dsp.mid.hi_hz},
-                "high": {"lo_hz": cfg.dsp.high.lo_hz, "hi_hz": cfg.dsp.high.hi_hz},
-            },
+            bands=self._bands_meta_dict(),
             tau=dict(cfg.dsp.tau),
             tau_attack=dict(cfg.dsp.tau_attack),
             tau_release_s=cfg.autoscale.tau_release_s,
@@ -338,11 +425,7 @@ class App:
             "sr": int(self.current_sr()),
             "blocksize": cfg.audio.blocksize,
             "n_fft_bins": cfg.fft.n_bins,
-            "bands": {
-                "low":  {"lo_hz": cfg.dsp.low.lo_hz,  "hi_hz": cfg.dsp.low.hi_hz},
-                "mid":  {"lo_hz": cfg.dsp.mid.lo_hz,  "hi_hz": cfg.dsp.mid.hi_hz},
-                "high": {"lo_hz": cfg.dsp.high.lo_hz, "hi_hz": cfg.dsp.high.hi_hz},
-            },
+            "bands": self._bands_meta_dict(),
             "fft_enabled": self.fft_enabled.is_set(),
             "fft_db_floor": cfg.fft.db_floor,
             "fft_db_ceiling": cfg.fft.db_ceiling,
