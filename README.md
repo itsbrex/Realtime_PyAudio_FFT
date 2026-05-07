@@ -1,5 +1,5 @@
 <p align="center" width="100%">
-<video src="https://github.com/aiXander/Realtime_PyAudio_FFT/raw/master/assets/demo.mp4" width="80%" controls></video>
+<video src="https://storage.googleapis.com/public-assets-xander/A_workbox/random_vids/demo.mp4" width="80%" controls></video>
 </p>
 
 # Realtime Audio Feature Server
