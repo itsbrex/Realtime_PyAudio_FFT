@@ -197,74 +197,77 @@ class FFTWorker(threading.Thread):
                         self.fft_drops += int(skipped_hops)
                         self.read_block_idx += int(skipped_hops) * self.hop_blocks
 
-                if wi - self.read_block_idx < self.n_blocks_per_window:
-                    continue
+                # Drain every hop currently available on each wake. fft_event is
+                # coalesced the same way dsp_event is — without draining, the worker
+                # advances at most one hop per callback and can't catch up after
+                # falling behind. The post-processor's smoothers / peak followers
+                # require every hop to be processed for correct state.
+                while wi - self.read_block_idx >= self.n_blocks_per_window:
+                    t0 = time.perf_counter_ns()
+                    # The hop "becomes available" the instant the last block of the
+                    # window lands; that's the latency clock's t=0 for FFT e2e.
+                    last_block_idx = self.read_block_idx + self.n_blocks_per_window - 1
+                    t_recv_ns = int(self.ring.block_t_ns[last_block_idx & self.ring.mask])
+                    if not self.ring.try_read_window(self.read_block_idx, self.n_blocks_per_window, self.window_buf):
+                        self.fft_drops += 1
+                        self.read_block_idx = max(
+                            self.read_block_idx + self.hop_blocks,
+                            wi - self.n_blocks_per_window,
+                        )
+                        continue
 
-                t0 = time.perf_counter_ns()
-                # The hop "becomes available" the instant the last block of the
-                # window lands; that's the latency clock's t=0 for FFT e2e.
-                last_block_idx = self.read_block_idx + self.n_blocks_per_window - 1
-                t_recv_ns = int(self.ring.block_t_ns[last_block_idx & self.ring.mask])
-                if not self.ring.try_read_window(self.read_block_idx, self.n_blocks_per_window, self.window_buf):
-                    self.fft_drops += 1
-                    self.read_block_idx = max(
-                        self.read_block_idx + self.hop_blocks,
-                        wi - self.n_blocks_per_window,
-                    )
-                    continue
-
-                np.multiply(self.window_buf, self.hann, out=self.window_buf)
-                np.fft.rfft(self.window_buf, out=self.spectrum)
-                np.abs(self.spectrum, out=self.mag_buf)
-                # Window-corrected RMS² power per rfft bin (float64 for log10).
-                self.power_buf[:] = self.mag_buf
-                np.multiply(self.power_buf, self.power_buf, out=self.power_buf)
-                self.power_buf *= self._win_power_corr
-                # Mean-of-power log-bin aggregation: sum(power) per log bin /
-                # rfft-count per log bin. Mean-of-dB underweights peaks; this
-                # is energy-conserving. Alloc-free hot path:
-                #   1. np.take valid rfft powers into preallocated scratch.
-                #   2. np.add.reduceat with precomputed run starts → per-run
-                #      sums into preallocated _reduceat_out.
-                #   3. scatter into _bins_scratch (skipping empty log bins).
-                #   4. multiply by _bin_count_inv (zeros empty bins).
-                # Replaces np.bincount, which allocated a fresh n_bins-length
-                # array every hop.
-                np.take(self.power_buf, self._valid_rfft_idx, out=self._valid_power)
-                bins = self._bins_scratch
-                if self._reduceat_starts.size > 0:
-                    np.add.reduceat(
-                        self._valid_power, self._reduceat_starts,
-                        out=self._reduceat_out,
-                    )
-                    bins[self._reduceat_targets] = self._reduceat_out
-                np.multiply(bins, self._bin_count_inv, out=bins)
-                # → dB (10·log10(RMS²) ≡ 20·log10(RMS)). Floor at EPS to keep
-                # log10 finite; empty bins are overwritten with sentinel below.
-                np.maximum(bins, EPS, out=bins)
-                np.log10(bins, out=bins)
-                np.multiply(bins, 10.0, out=bins)
-                # Cast once into the back buffer of the double-buffered wire
-                # output, then patch sentinels via the cached index.
-                bins_f32 = self._bins_f32_buffers[self._wire_idx]
-                bins_f32[:] = bins
-                if self._has_empty_bins:
-                    bins_f32[self._empty_bin_idx] = EMPTY_BIN_SENTINEL
-                # Run the post-processor (if present) and publish both streams.
-                # Producer-side double-buffering on both streams means the
-                # published refs stay stable across the next hop's writes; no
-                # copies needed on the publish path.
-                processed = None
-                if self.post_processor is not None:
-                    processed = self.post_processor.process(bins_f32)
-                self.fft_store.publish(bins_f32, processed, t_recv_ns)
-                self._wire_idx ^= 1
-                try:
-                    self.on_publish()
-                except Exception as e:
-                    log.debug("fft on_publish raised: %s", e)
-                t1 = time.perf_counter_ns()
-                i = self.perf_idx
-                self.perf_ring[i % self.perf_len] = t1 - t0
-                self.perf_idx = i + 1
-                self.read_block_idx += self.hop_blocks
+                    np.multiply(self.window_buf, self.hann, out=self.window_buf)
+                    np.fft.rfft(self.window_buf, out=self.spectrum)
+                    np.abs(self.spectrum, out=self.mag_buf)
+                    # Window-corrected RMS² power per rfft bin (float64 for log10).
+                    self.power_buf[:] = self.mag_buf
+                    np.multiply(self.power_buf, self.power_buf, out=self.power_buf)
+                    self.power_buf *= self._win_power_corr
+                    # Mean-of-power log-bin aggregation: sum(power) per log bin /
+                    # rfft-count per log bin. Mean-of-dB underweights peaks; this
+                    # is energy-conserving. Alloc-free hot path:
+                    #   1. np.take valid rfft powers into preallocated scratch.
+                    #   2. np.add.reduceat with precomputed run starts → per-run
+                    #      sums into preallocated _reduceat_out.
+                    #   3. scatter into _bins_scratch (skipping empty log bins).
+                    #   4. multiply by _bin_count_inv (zeros empty bins).
+                    # Replaces np.bincount, which allocated a fresh n_bins-length
+                    # array every hop.
+                    np.take(self.power_buf, self._valid_rfft_idx, out=self._valid_power)
+                    bins = self._bins_scratch
+                    if self._reduceat_starts.size > 0:
+                        np.add.reduceat(
+                            self._valid_power, self._reduceat_starts,
+                            out=self._reduceat_out,
+                        )
+                        bins[self._reduceat_targets] = self._reduceat_out
+                    np.multiply(bins, self._bin_count_inv, out=bins)
+                    # → dB (10·log10(RMS²) ≡ 20·log10(RMS)). Floor at EPS to keep
+                    # log10 finite; empty bins are overwritten with sentinel below.
+                    np.maximum(bins, EPS, out=bins)
+                    np.log10(bins, out=bins)
+                    np.multiply(bins, 10.0, out=bins)
+                    # Cast once into the back buffer of the double-buffered wire
+                    # output, then patch sentinels via the cached index.
+                    bins_f32 = self._bins_f32_buffers[self._wire_idx]
+                    bins_f32[:] = bins
+                    if self._has_empty_bins:
+                        bins_f32[self._empty_bin_idx] = EMPTY_BIN_SENTINEL
+                    # Run the post-processor (if present) and publish both streams.
+                    # Producer-side double-buffering on both streams means the
+                    # published refs stay stable across the next hop's writes; no
+                    # copies needed on the publish path.
+                    processed = None
+                    if self.post_processor is not None:
+                        processed = self.post_processor.process(bins_f32)
+                    self.fft_store.publish(bins_f32, processed, t_recv_ns)
+                    self._wire_idx ^= 1
+                    try:
+                        self.on_publish()
+                    except Exception as e:
+                        log.debug("fft on_publish raised: %s", e)
+                    t1 = time.perf_counter_ns()
+                    i = self.perf_idx
+                    self.perf_ring[i % self.perf_len] = t1 - t0
+                    self.perf_idx = i + 1
+                    self.read_block_idx += self.hop_blocks

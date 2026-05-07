@@ -64,7 +64,12 @@ class DSPWorker(threading.Thread):
                     self.dsp_drops += skipped
                 self.read_block_idx = wi - 1
 
-            if self.read_block_idx < wi:
+            # Drain every block currently in the ring on each wake. threading.Event.set()
+            # is idempotent — N callbacks between two wakes coalesce into one — so a one-
+            # block-per-wake loop can never catch up after falling behind, and ends up
+            # publishing stale block timestamps (lmh_e2e ≈ N · block_period). Draining
+            # keeps FeatureStore on the freshest block and the IIR filter state correct.
+            while self.read_block_idx < wi:
                 if self.ring.try_read_block(self.read_block_idx, self.dsp_in):
                     t_recv_ns = int(self.ring.block_t_ns[self.read_block_idx & self.ring.mask])
                     t0 = time.perf_counter_ns()
