@@ -12,7 +12,7 @@ dsp:
     lo_hz: 304.0
     hi_hz: 1760.0
   high:
-    lo_hz: 2624.0
+    lo_hz: 2944.0
     hi_hz: 13952.0
   tau:
     low: 0.11992496177470643
@@ -53,8 +53,8 @@ ws:
 ui:
   peak_decay_per_s: 0.5
   layout:
-    split_x: 0.37219680520546367
-    split_y: 0.45117476239977855
+    split_x: 0.33759228543145237
+    split_y: 0.4004672152299672
     quadrants:
     - bars
     - lines

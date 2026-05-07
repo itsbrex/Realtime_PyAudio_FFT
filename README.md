@@ -1,5 +1,7 @@
 <p align="center">
-  <img src="assets/screenshot.webp" alt="Realtime Audio Feature Server screenshot" width="95%">
+  <video src="assets/demo.mp4" width="95%" controls muted autoplay loop playsinline>
+    Your browser does not support the video tag. <a href="assets/demo.mp4">Download the demo</a>.
+  </video>
 </p>
 
 # Realtime Audio Feature Server
