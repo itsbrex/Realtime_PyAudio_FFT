@@ -114,6 +114,30 @@ class FFTWorker(threading.Thread):
         # array on every hop.
         self._valid_rfft_idx = np.flatnonzero(self.bin_valid_mask).astype(np.intp)
         self._valid_power = np.zeros(self._valid_rfft_idx.size, dtype=np.float64)
+        # Replacement for the per-hop `np.bincount(...)` allocation.
+        # bin_idx_valid is monotonic non-decreasing (rfft freqs and log-bin
+        # edges are both monotonic, so consecutive valid rfft bins fall into
+        # contiguous runs of the same log-bin index). That's the precondition
+        # for np.add.reduceat — it sums consecutive ranges with no allocation.
+        # We precompute:
+        #   _reduceat_starts:  start position of each run within _valid_power
+        #   _reduceat_targets: the log-bin index that each run scatters into
+        #   _reduceat_out:     preallocated reduceat output (len = num runs)
+        #   _bins_scratch:     n_bins-length scratch the result is scattered
+        #                      into; replaces the bincount return array.
+        # Empty log bins (no rfft bins map there) keep their stale value in
+        # _bins_scratch but get zeroed by `* _bin_count_inv` (inv = 0 there)
+        # and finally overwritten by EMPTY_BIN_SENTINEL in the f32 wire output.
+        if self.bin_idx_valid.size > 0:
+            unique_bins, start_positions = np.unique(self.bin_idx_valid, return_index=True)
+            self._reduceat_starts = start_positions.astype(np.intp)
+            self._reduceat_targets = unique_bins.astype(np.intp)
+            self._reduceat_out = np.zeros(unique_bins.size, dtype=np.float64)
+        else:
+            self._reduceat_starts = np.zeros(0, dtype=np.intp)
+            self._reduceat_targets = np.zeros(0, dtype=np.intp)
+            self._reduceat_out = np.zeros(0, dtype=np.float64)
+        self._bins_scratch = np.zeros(self.n_bins, dtype=np.float64)
         # Double-buffered f32 wire format. Each hop writes into the back buffer
         # and publishes that ref. Two-buffer alternation is safe because both
         # consumers (WS encoder via tobytes, OSC sender via tolist) drain the
@@ -198,19 +222,22 @@ class FFTWorker(threading.Thread):
                 self.power_buf *= self._win_power_corr
                 # Mean-of-power log-bin aggregation: sum(power) per log bin /
                 # rfft-count per log bin. Mean-of-dB underweights peaks; this
-                # is energy-conserving.
-                # Gather valid rfft powers via np.take into a preallocated
-                # scratch — `power_buf[bin_valid_mask]` would allocate every
-                # hop. bincount itself still allocates the result; replacing
-                # it would require a sparse mat-vec, not worth the complexity.
+                # is energy-conserving. Alloc-free hot path:
+                #   1. np.take valid rfft powers into preallocated scratch.
+                #   2. np.add.reduceat with precomputed run starts → per-run
+                #      sums into preallocated _reduceat_out.
+                #   3. scatter into _bins_scratch (skipping empty log bins).
+                #   4. multiply by _bin_count_inv (zeros empty bins).
+                # Replaces np.bincount, which allocated a fresh n_bins-length
+                # array every hop.
                 np.take(self.power_buf, self._valid_rfft_idx, out=self._valid_power)
-                bins = np.bincount(
-                    self.bin_idx_valid,
-                    weights=self._valid_power,
-                    minlength=self.n_bins,
-                )
-                if bins.shape[0] > self.n_bins:
-                    bins = bins[: self.n_bins]
+                bins = self._bins_scratch
+                if self._reduceat_starts.size > 0:
+                    np.add.reduceat(
+                        self._valid_power, self._reduceat_starts,
+                        out=self._reduceat_out,
+                    )
+                    bins[self._reduceat_targets] = self._reduceat_out
                 np.multiply(bins, self._bin_count_inv, out=bins)
                 # → dB (10·log10(RMS²) ≡ 20·log10(RMS)). Floor at EPS to keep
                 # log10 finite; empty bins are overwritten with sentinel below.

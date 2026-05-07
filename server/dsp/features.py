@@ -297,79 +297,84 @@ class AutoScaler:
         self._warmed = False
 
     def update(self, values_in: np.ndarray, out: np.ndarray) -> np.ndarray:
-        nf = max(self.noise_floor, EPS)
-        # Bandwidth-aware noise subtraction: clean_rms = sqrt(max(0, rms² − E[noise²])).
-        # E[noise²] = noise_floor² · (BW · n_fft_window / sr) per band — i.e. one
-        # rfft bin's worth of "at-floor" noise summed over the band's linear bins.
-        # Operates on smoothed RMS (commutes with the linear smoother to leading
-        # order); applied before tilt so the tilt scales the cleaned amplitude.
-        np.multiply(values_in, values_in, out=self._v2)
-        np.subtract(self._v2, self._noise_pwr_per_band, out=self._v2)
-        np.maximum(self._v2, 0.0, out=self._v2)
-        np.sqrt(self._v2, out=self._v2)
-        # Pre-tilt
-        np.multiply(self._v2, self._tilt_lin, out=self._v)
-        v = self._v
+        # Hot path: scalar Python unroll for n=3. Numpy ufunc dispatch costs
+        # ~1-3µs per call regardless of array length — for length-3 arrays
+        # that overhead dominates the actual arithmetic by ~20×. Calling the
+        # ~16 ufuncs the vectorised version used was burning ~6-15ms/sec on
+        # Pi 4 just on Python-side bookkeeping. The unrolled version below
+        # is a few µs per block. Mirrors ExpSmoother.update for the same reason.
+        nf2 = self.noise_floor                    # gate threshold (may be 0)
+        nf = nf2 if nf2 > EPS else EPS            # divisor floor
 
-        # Asymmetric peak follower (warm to noise_floor — don't saturate to first sample)
+        peak = self._peak                         # length-3 f64 (persistent)
+        tilt = self._tilt_lin
+        npwr = self._noise_pwr_per_band
+        a_atk = self._a_atk
+        a_rel = self._a_rel
+
+        # Read input scalars once (numpy scalar attribute lookups aren't free).
+        r0 = float(values_in[0]); r1 = float(values_in[1]); r2 = float(values_in[2])
+
+        # Bandwidth-aware noise subtraction in power, then sqrt + tilt.
+        c0 = r0 * r0 - npwr[0]; c0 = 0.0 if c0 < 0.0 else c0
+        c1 = r1 * r1 - npwr[1]; c1 = 0.0 if c1 < 0.0 else c1
+        c2 = r2 * r2 - npwr[2]; c2 = 0.0 if c2 < 0.0 else c2
+        v0 = math.sqrt(c0) * tilt[0]
+        v1 = math.sqrt(c1) * tilt[1]
+        v2 = math.sqrt(c2) * tilt[2]
+
+        # Asymmetric peak follower (warm to nf — don't saturate to first sample).
         if not self._warmed:
-            self._peak.fill(nf)
+            peak[0] = nf; peak[1] = nf; peak[2] = nf
             self._warmed = True
-        # Asymmetric one-pole follower, alloc-free: fill alpha with release,
-        # then masked-copy attack into rising bins. _mask, _alpha, _diff are
-        # all preallocated so no per-block temporaries are produced.
-        np.subtract(v, self._peak, out=self._diff)
-        np.greater(self._diff, 0.0, out=self._mask)
-        self._alpha.fill(self._a_rel)
-        np.copyto(self._alpha, self._a_atk, where=self._mask)
-        np.multiply(self._alpha, self._diff, out=self._alpha)
-        np.add(self._peak, self._alpha, out=self._peak)
+        p0 = peak[0]; p1 = peak[1]; p2 = peak[2]
+        d0 = v0 - p0; p0 += (a_atk if d0 > 0.0 else a_rel) * d0
+        d1 = v1 - p1; p1 += (a_atk if d1 > 0.0 else a_rel) * d1
+        d2 = v2 - p2; p2 += (a_atk if d2 > 0.0 else a_rel) * d2
+        peak[0] = p0; peak[1] = p1; peak[2] = p2
 
-        # tanh compressor: scaled = tanh( max(0, v - nf) / max(peak, nf) )
-        # Repurpose _alpha (no longer needed after the peak update) as the
-        # denominator buffer to avoid the np.maximum(peak, nf) temp.
-        np.subtract(v, self.noise_floor, out=self._scaled)
-        np.maximum(self._scaled, 0.0, out=self._scaled)
-        np.maximum(self._peak, nf, out=self._alpha)
-        np.divide(self._scaled, self._alpha, out=self._scaled)
-        np.tanh(self._scaled, out=self._scaled)
+        # tanh( max(0, v - nf2) / max(peak, nf) )
+        g0 = v0 - nf2; g0 = 0.0 if g0 < 0.0 else g0
+        g1 = v1 - nf2; g1 = 0.0 if g1 < 0.0 else g1
+        g2 = v2 - nf2; g2 = 0.0 if g2 < 0.0 else g2
+        sc0 = math.tanh(g0 / (p0 if p0 > nf else nf))
+        sc1 = math.tanh(g1 / (p1 if p1 > nf else nf))
+        sc2 = math.tanh(g2 / (p2 if p2 > nf else nf))
 
         s = self.strength
         if s >= 1.0:
-            np.copyto(out, self._scaled)
+            out[0] = sc0; out[1] = sc1; out[2] = sc2
             return out
 
         # Raw dB-mapped baseline (strength<1 path). Mirrors the FFT
-        # post-processor's strength<1 path so the L/M/H readout visually
-        # agrees with the FFT viz in raw mode:
-        #   • UNTILTED (uses values_in directly, not the post-tilt v).
-        #     Tilt is for the auto-scaler's normalization, not the honest
-        #     dB readout — the FFT viz also baselines from untilted
-        #     interp_db.
-        #   • Per-rfft-bin equivalent (rms_band · _per_bin_factor =
-        #     rms_band / sqrt(K_lin)). For broadband-uniform input this
-        #     equals what an FFT log bin in the band would read, so
-        #     wider bands no longer inflate by sqrt(K_lin) (~+24 dB for
-        #     the high band).
-        #   • Gate per-bin equivalent at noise_floor — same threshold the
-        #     FFT viz uses (bin amplitude < nf → 0).
-        span = max(1.0, self.db_ceiling - self.db_floor)
-        np.multiply(values_in, self._per_bin_factor, out=self._raw)
-        np.less(self._raw, self.noise_floor, out=self._mask)
-        np.maximum(self._raw, EPS, out=self._raw)
-        np.log10(self._raw, out=self._raw)
-        np.multiply(self._raw, 20.0, out=self._raw)
-        np.subtract(self._raw, self.db_floor, out=self._raw)
-        np.divide(self._raw, span, out=self._raw)
-        np.clip(self._raw, 0.0, 1.0, out=self._raw)
-        self._raw[self._mask] = 0.0
+        # post-processor's strength<1 path: UNTILTED, per-rfft-bin equivalent
+        # (raw · _per_bin_factor), gate at noise_floor (matches FFT viz).
+        span = self.db_ceiling - self.db_floor
+        if span < 1.0: span = 1.0
+        inv_span = 1.0 / span
+        df = self.db_floor
+        pbf = self._per_bin_factor
+
+        def _baseline(raw, factor):
+            pb = raw * factor
+            if pb < nf2:
+                return 0.0
+            if pb < EPS:
+                pb = EPS
+            v = (20.0 * math.log10(pb) - df) * inv_span
+            if v < 0.0: return 0.0
+            if v > 1.0: return 1.0
+            return v
+
+        b0 = _baseline(r0, pbf[0])
+        b1 = _baseline(r1, pbf[1])
+        b2 = _baseline(r2, pbf[2])
 
         if s <= 0.0:
-            np.copyto(out, self._raw)
+            out[0] = b0; out[1] = b1; out[2] = b2
         else:
-            # Repurpose _diff as scratch for (1-s)*_raw to keep the blend
-            # alloc-free.
-            np.multiply(self._scaled, s, out=out)
-            np.multiply(self._raw, 1.0 - s, out=self._diff)
-            np.add(out, self._diff, out=out)
+            inv_s = 1.0 - s
+            out[0] = s * sc0 + inv_s * b0
+            out[1] = s * sc1 + inv_s * b1
+            out[2] = s * sc2 + inv_s * b2
         return out

@@ -86,7 +86,7 @@ What you see here is **byte-identical** to the wire payload. The white peak-hold
 - Address: `/audio/fft`
 - Payload: `n_bins` float32 values (default `n_bins = 128`, configurable via `fft.n_bins` in `config.yaml`)
 - Range:
-  - **raw dB OFF** (default) → `[0, 1]` post-processed (smoother → peak follower → gate → tanh → strength blend)
+  - **raw dB OFF** (default) → `[0, 1]` post-processed (smoother → auto-scaler → gate → tanh → strength blend)
   - **raw dB ON** → log-spaced spectrum in dB; empty low bins are rewritten to `db_floor` on OSC so consumers stay in-range
 - Rate: hop-rate (~`sr / hop`, e.g. ~94 Hz at 48 kHz / hop=512). Only sent when the FFT worker is enabled and `osc.send_fft` is true.
 - Default destination: `127.0.0.1:9000`
@@ -99,7 +99,7 @@ Same bins are pushed as a binary frame on `ws://127.0.0.1:8765`:
 
 Disabling saves CPU when you only need L/M/H."><input type="checkbox" id="fft-toggle" /> enable</label> <label class="inline" title="**What you see is what's sent.** This graph is byte-identical to the `/audio/fft` OSC payload.
 
-- **OFF** (default): server runs the same per-bin pipeline as L/M/H (smoother → asymmetric peak follower → soft gate → tanh → strength blend) and sends `[0..1]` post-processed values.
+- **OFF** (default): server runs the same per-bin pipeline as L/M/H (smoother → asymmetric auto-scaler → soft gate → tanh → strength blend) and sends `[0..1]` post-processed values.
 - **ON**: server sends the raw wire-dB log spectrum (sentinels rendered as gaps).
 
 The server is authoritative — toggling sends `set_fft_send_raw_db`; the OSC payload switches in lockstep with the visualization."><input type="checkbox" id="fft-raw-db" /> raw dB</label></div>
@@ -156,7 +156,24 @@ Without a gate, the auto-scaler would happily normalize background hiss up to fu
 - Shown in `dBFS` (digital full-scale reference)
 - Applied to both L/M/H and FFT bins
 - Bins below the floor pin to the chart bottom (no disappearing bars)">noise gate <input type="range" id="autoscale-floor" min="0" max="1000" step="1" /> <span id="autoscale-floor-val"></span></label>
-          <label title="**Spectral tilt.** Tilts the gate and peak follower across frequency: `+N dB/oct` above 1 kHz, `−N dB/oct` below.
+          <label title="**Attack time.** How fast the auto-scaler locks into a *rising* signal.
+
+This sets how quickly it reacts when the input gets suddenly louder.
+
+- Smaller (`5–20 ms`) → snappy. Transients lock in immediately; the auto-scale catches up to a sudden loud passage almost instantly.
+- Larger → damped. New peaks are absorbed gradually, less reactive to sudden level changes.
+
+Drives both the L/M/H and the FFT per-bin auto-scaler.">attack (ms) <input type="range" id="autoscale-attack" min="1" max="500" step="1" data-log="1" /> <span id="autoscale-attack-val"></span></label>
+          <label title="**Release time.** How fast the auto-scaler locks into a *falling* signal — the **rolling memory** of the auto-rescaler.
+
+The tracked peak decays over this time constant. Once it has decayed below the current signal, the new value becomes the peak.
+
+- Longer (`60–300 s`) → stable view across long passages. A loud chorus won't make the following quiet verse vanish.
+- Shorter (`10–30 s`) → faster adaptation. The visualizer constantly rescales to whatever is loud right now (more dynamic, but compresses the contrast between loud and quiet sections).
+- Snaps to multiples of `10 s`
+
+Drives both the L/M/H and the FFT per-bin auto-scaler.">release (s) <input type="range" id="autoscale-tau" min="10" max="300" step="1" data-log="1" /> <span id="autoscale-tau-val"></span></label>
+          <label title="**Spectral tilt.** Tilts the gate and auto-scaler across frequency: `+N dB/oct` above 1 kHz, `−N dB/oct` below.
 
 Most music has far more energy in the lows than the highs (the `1/f` / pink-noise shape). Without tilt, bass dominates and the high end sits permanently below the gate. Tilting brings them back to parity.
 
@@ -167,7 +184,7 @@ Typical values:
 - higher → push more high-end through the gate
 
 Affects both pipelines: shifts the wire dB on the FFT side; derives a per-band noise floor from each band's geometric center on the L/M/H side, so the same global gate fires uniformly across frequency.">tilt (dB/oct) <input type="range" id="fft-tilt" min="-25" max="50" step="1" /> <span id="fft-tilt-val"></span></label>
-          <label title="**FFT-only.** Spatial smear of the per-bin peak follower (Gaussian, width in **octaves** of frequency).
+          <label title="**FFT-only.** Spatial smear of the per-bin auto-scaler (Gaussian, width in **octaves** of frequency).
 
 Without smear, a sustained pure tone (a single bin holding a high value) normalizes *itself* down to nothing — it becomes its own peak and divides itself out, ending up looking smaller than its quiet neighbors.
 
@@ -178,36 +195,6 @@ Smearing the peak across nearby bins fixes this: the tone now competes against i
 - Higher → more local frequency contour preserved, less global flattening
 
 *L/M/H has no spectral context, so this only affects the FFT.*">smear (oct) <input type="range" id="fft-peak-smear" min="0" max="200" step="1" /> <span id="fft-peak-smear-val"></span></label>
-        </fieldset>
-
-        <fieldset>
-          <legend title="**Peak follower — the auto-rescaling engine.**
-
-The peak follower is what makes the visualization **adapt to changing input levels**. It tracks the loudest recent value (per band, and per FFT bin) and the auto-scaler divides the live signal by that running peak. So when a track gets quieter, the tracked peak decays and the output rescales back up — quiet passages stay visible.
-
-Two time constants control its behavior:
-
-- **Attack** — how fast a *new* peak gets registered (rising-edge response)
-- **Release** — how long peaks are held before the tracker forgets them (the rolling memory)
-
-Drives both the L/M/H auto-scaler and the FFT per-bin peak follower.">Peak follower</legend>
-          <label title="**Attack time.** How fast the peak follower locks onto a *rising* signal.
-
-This sets how quickly the auto-rescaler reacts when the input gets suddenly louder.
-
-- Smaller (`5–20 ms`) → snappy. Transients lock in immediately; the auto-scale catches up to a sudden loud passage almost instantly.
-- Larger → damped. New peaks are absorbed gradually, less reactive to sudden level changes.
-
-Drives both the L/M/H auto-scaler and the FFT per-bin peak follower.">attack (ms) <input type="range" id="autoscale-attack" min="1" max="500" step="1" data-log="1" /> <span id="autoscale-attack-val"></span></label>
-          <label title="**Release time.** How long peaks are held before the auto-scaler 'forgets' them — the **rolling memory** of the auto-rescaler.
-
-The tracked peak decays over this time constant. Once it has decayed below the current signal, the new value becomes the peak.
-
-- Longer (`60–300 s`) → stable view across long passages. A loud chorus won't make the following quiet verse vanish.
-- Shorter (`10–30 s`) → faster adaptation. The visualizer constantly rescales to whatever is loud right now (more dynamic, but compresses the contrast between loud and quiet sections).
-- Snaps to multiples of `10 s`
-
-Drives both the L/M/H auto-scaler and the FFT per-bin peak follower.">release (s) <input type="range" id="autoscale-tau" min="10" max="300" step="1" data-log="1" /> <span id="autoscale-tau-val"></span></label>
         </fieldset>
 
         <fieldset>

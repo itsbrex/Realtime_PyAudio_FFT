@@ -412,10 +412,16 @@ class App:
         valid = ring[:n] if count <= ring.shape[0] else ring
         # filter zeros — slot may be unwritten
         nz = valid[valid > 0]
-        if nz.size == 0:
+        sz = nz.size
+        if sz == 0:
             return 0.0, 0.0
         avg_ns = float(np.mean(nz))
-        p95_ns = float(np.percentile(nz, 95))
+        # p95 via np.partition — O(n) quickselect, vs np.percentile's O(n log n)
+        # full sort + linear interpolation. Status loop runs 6 of these at 5 Hz,
+        # so on Pi 4 the partition swap saves a few ms/sec. Exact integer index
+        # (no interpolation between samples) is fine for monitoring.
+        k = int(0.95 * (sz - 1))
+        p95_ns = float(np.partition(nz, k)[k])
         return avg_ns / 1e6, p95_ns / 1e6  # ms
 
     def snapshot_server_status(self) -> dict:
