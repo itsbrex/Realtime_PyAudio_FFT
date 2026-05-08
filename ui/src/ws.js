@@ -2,7 +2,25 @@
 
 import { store } from "./store.js";
 
-const WS_URL = `ws://${location.hostname || "127.0.0.1"}:8765`;
+// Pick WS URL based on how the page was loaded:
+//  - https:// (e.g. served via `tailscale serve` over the tailnet) → use a
+//    same-origin wss://host/ws so the WebSocket upgrade rides the same
+//    HTTPS proxy. The Pi has a `tailscale serve --https=10000 --set-path=/ws
+//    http://localhost:8765` mount that forwards /ws to the raw WS server.
+//    This avoids mixed-content blocks AND avoids needing a separate
+//    tailscale port for 8765 (only 443/8443/10000 are allowed anyway).
+//  - http:// on LAN (the audio-server's own UI on :8766) → keep the legacy
+//    direct ws://host:8765 so dev / hotspot access still works unchanged.
+//  - file:// or unknown → fall back to 127.0.0.1:8765.
+const WS_URL = (() => {
+  if (location.protocol === "https:") {
+    return `wss://${location.host}/ws`;
+  }
+  if (location.protocol === "http:") {
+    return `ws://${location.hostname}:8765`;
+  }
+  return "ws://127.0.0.1:8765";
+})();
 
 let socket = null;
 let backoffMs = 250;
