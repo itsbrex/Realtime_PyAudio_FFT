@@ -10,7 +10,8 @@ The design is documented in detail in `realtime_audio_server_plan.md`; if behavi
 server/      # Python audio-server package (entry point: server.main:main)
   audio/     # PortAudio callback, ring buffer, stream lifecycle, device probing
   dsp/       # FilterBank, ExpSmoother, AutoScaler, FFTWorker, DSPWorker,
-             # FFTPostProcessor (per-bin port of AutoScaler for the FFT bins)
+             # FFTPostProcessor (per-bin port of AutoScaler for the FFT bins),
+             # BeatTracker (onset detector + rolling BPM on the post-processed `low`)
   control/   # WS message dispatcher + pure validators
   io/        # WSServer, OSC sender task, FeatureStore/FFTStore, static HTTP
   config.py  # Dataclass schema, YAML load, debounced atomic Persister
@@ -62,7 +63,7 @@ PortAudio C thread ──► AudioCallback (server/audio/callback.py)
        FilterBank → RMS         windowed rfft → log-spaced bins (dB)
        → ExpSmoother            → FFTPostProcessor (per-bin port of AutoScaler:
        → AutoScaler                sentinel interp (precomputed LUT)
-                                    → +tilt → dB→linear
+       → BeatTracker.update(low)    → +tilt → dB→linear
        → FeatureStore.publish()    → per-bin EMA smoother (taus interpolated
               │                     from L/M/H band centers)
               │                     → asymmetric peak follower → spatial
@@ -130,11 +131,28 @@ The output is always in `[0, 1]` (same range as L/M/H scaled). `process()` write
 
 **`update_*` methods** (called from the asyncio loop on Dispatcher events) all take `_lock` and recompute affected derived state: `update_smoothing` rebuilds `tau_per_bin`; `update_bands` re-anchors it; `update_autoscale` re-derives the attack/release alphas; `update_smear` recomputes σ; `update_tilt` rebuilds the per-bin tilt offsets; `reconfigure` reallocates everything (used on `n_bins` / `sr` / `f_min` / hot-switch). Hop-rate `process()` calls don't allocate — buffers (`smooth_lin`, `peak_lin`, `peak_smoothed`, `interp_db`, two `_processed_buffers`, the sentinel-interp LUT `_empty_idx / _left_idx / _right_idx / _w_left / _w_right / _left_vals / _right_vals`, plus four scratches `_lin / _diff / _alpha / _scratch` and a bool `_mask`) are preallocated.
 
+### Beat / BPM (`server/dsp/beat.py`)
+
+`BeatTracker` runs once per audio block inside `DSPWorker`, fed the **fully post-processed `low`** (after smoother + AutoScaler + strength blend — i.e. the same value sent on `/audio/lmh` and rendered on the bars/lines viz). This is deliberate: every UI knob that shapes the visual `low` track (bandpass edges, smoothing, autoscale strength, noise gate) also shapes what the tracker sees, so the user dials `low` until it pulses cleanly on each kick and there's no second pipeline to tune.
+
+Algorithm (pure scalar Python on the hot path; allocation only inside `_on_fire`, bounded < 4 Hz by the refractory period):
+
+1. **Two one-pole envelopes:** fast (~12 ms, fixed) and slow (`slow_tau_s`, default 300 ms — what counts as a "transient").
+2. **Novelty:** half-wave-rectified flux `nov = max(0, fast - slow)`. Positive only when the signal rises faster than the slow envelope can track.
+3. **Adaptive threshold:** slow EMA of `nov` itself (1 s tau, fixed) × `K_HIGH` (= `sensitivity`, default 1.8) for the trigger floor; × `K_LOW` (= 0.6, fixed) for Schmitt release. Plus an absolute floor (`ABS_FLOOR = 0.02`) so silence-noise can't trigger.
+4. **Schmitt + refractory:** `idle → armed` (fire) when `nov > thr_high` AND `t - last_fire > min_ioi_s` (default 250 ms = 240 BPM ceiling); `armed → idle` when `nov < thr_low`. Exactly one `1` per onset, surrounded by `0`s.
+5. **BPM:** median of the last `BPM_RING` (= 12) IOIs with 0.5×–2× outlier rejection, octave-folded into `[BPM_MIN, BPM_MAX]` (= 60–180), per-onset EMA (`BPM_SMOOTH_ALPHA = 0.3`, ≈ 3-beat settling).
+6. **Silence handling:** if no onset for > `BPM_DECAY_AFTER_S` (= 5 s), zero out the BPM and clear the IOI ring so the last song's tempo doesn't bleed into a quiet gap.
+
+`update(rms_lo)` returns `(beat ∈ {0,1}, bpm: float)`. `BeatTracker.beat_count` is a monotonic onset counter — the WS broadcaster reads it (not the per-block `beat` flag) and emits `beat=1` on snapshots where `beat_count` advanced, so onsets that fall between WS snapshot ticks (block rate ≈ 187 Hz vs `ws_snapshot_hz` default 60) are never lost. OSC sends `/audio/beat` only on onset blocks (no zero pulses) — clean rising-edge trigger semantic for downstream consumers.
+
+User-facing knobs (`sensitivity`, `refractory_s`, `slow_tau_s`) live in `cfg.beat` and are routed through `Dispatcher._set_beat` → `App.apply_beat` → `BeatTracker.set_params`. The setters are atomic single-attribute swaps (worker re-reads on next iteration; no lock needed) — same pattern as `ExpSmoother.set_tau` / `AutoScaler.set_*`. `BeatTracker.reconfigure(sr, blocksize)` is called from `App.hot_switch_device` to re-derive `dt`/alphas; user-tuned params persist across the swap. The `K_LOW`, fast envelope tau, threshold-EMA tau, `BPM_*` constants are deliberately not exposed — exposing every endpoint is over-tuning.
+
 ### Wire formats
 
-- **WS JSON**: `meta`, `snapshot` (L/M/H raw + scaled), `devices`, `presets`, `server_status`, `error`. Inbound types are listed in `Dispatcher._handlers`.
+- **WS JSON**: `meta`, `snapshot` (L/M/H raw + scaled, plus `beat ∈ {0,1}` and `bpm`), `devices`, `presets`, `server_status`, `error`. Inbound types are listed in `Dispatcher._handlers`. `meta.beat` carries `{sensitivity, refractory_s, slow_tau_s}`.
 - **WS binary** (FFT): `[type=1:u8][reserved:u8][n_bins:u16 LE][float32 * n_bins LE]` — see `encode_fft_binary` / `decodeFftBinary` in `ui/src/ws.js`. **Float interpretation depends on `meta.fft_send_raw_db`**: `false` (default) → post-processed `[0..1]`; `true` → raw wire dB with `-1000` sentinels for empty log bins.
-- **OSC**: `/audio/meta [sr, blocksize, n_fft_bins, low_lo, low_hi, mid_lo, mid_hi, high_lo, high_hi]` — three independent bandpasses, edges in Hz. `/audio/lmh [low, mid, high]` (scaled, per audio block). `/audio/fft [...bins]` (only when `osc.send_fft` is true and FFT is enabled). **Same `send_raw_db` flag controls FFT semantics here**: `false` → `[0..1]` post-processed (matches L/M/H semantics on OSC); `true` → raw dB (sentinels rewritten to `db_floor` so consumers see in-range values).
+- **OSC**: `/audio/meta [sr, blocksize, n_fft_bins, low_lo, low_hi, mid_lo, mid_hi, high_lo, high_hi]` — three independent bandpasses, edges in Hz. `/audio/lmh [low, mid, high]` (scaled, per audio block). `/audio/bpm [bpm:f]` (per audio block; `0.0` while not yet locked or after long silence). `/audio/beat [1:i]` (sent only on onset blocks — absence is silence on this address; constant pre-encoded packet, no per-send packing). `/audio/fft [...bins]` (only when `osc.send_fft` is true and FFT is enabled). **Same `send_raw_db` flag controls FFT semantics here**: `false` → `[0..1]` post-processed (matches L/M/H semantics on OSC); `true` → raw dB (sentinels rewritten to `db_floor` so consumers see in-range values).
 
 ### Config / validation
 
