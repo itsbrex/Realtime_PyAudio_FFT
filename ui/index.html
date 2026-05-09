@@ -10,7 +10,13 @@
   </head>
   <body>
     <header class="topbar">
-      <h1>Realtime Audio Server</h1>
+      <h1>Realtime Audio Server <span id="bpm-readout" class="bpm-readout" title="**Live tempo estimate.**
+
+Rolling BPM from the server-side beat detector running on the post-processed low-band signal (the same `low` value you see on the bars/lines). Reads `— BPM` until a few onsets have accumulated, or after long silence.
+
+Tune the detector by tuning the `low` signal: bandpass edges, smoothing tau, auto-scaler strength, and noise gate all shape what the tracker sees.
+
+Also published as OSC `/audio/bpm <f>` (per audio block).">— BPM</span></h1>
       <div class="badges">
         <span class="badge" id="ws-status">disconnected</span>
         <span class="badge" id="server-fps">srv 0 Hz</span>
@@ -250,6 +256,38 @@ Falling-edge τ only — onsets are governed by the attack-τ slider above.">mid
 Larger → hat / cymbal sizzle averages into a continuous shimmer. Smaller → each cymbal strike fades fast, individual hi-hat hits remain crisp.
 
 Falling-edge τ only — onsets are governed by the attack-τ slider above.">high <input type="range" id="tau-high" min="5" max="2000" step="1" data-log="1" /> <span id="tau-high-val"></span></label>
+        </fieldset>
+
+        <fieldset>
+          <legend title="**Beat detection.**
+
+Server-side onset detector running on the post-processed `low` signal (the same `low` you see on the bars / lines viz). Fires a single `1` pulse on each detected beat — sent over OSC as `/audio/beat` (only on onsets, no `0` filler), and as `beat: 1` in the WS snapshot for the UI flash.
+
+Tune in two stages:
+
+1. **Shape the `low` signal first.** The detector rides whatever `low` looks like — bandpass edges, smoothing τ, autoscaler strength, noise gate all shape its input. Aim for a signal that visibly pulses on each kick with a clean fall between hits.
+2. **Then dial these knobs** for the trigger sensitivity / debounce / transient shape.">Beat detection</legend>
+          <label title="**Sensitivity** = Schmitt high-threshold multiplier on the rolling novelty average.
+
+The detector tracks a slow EMA of the half-wave-rectified novelty (`max(0, fast_env − slow_env)`); a beat fires when novelty crosses `sensitivity × that average`.
+
+- **Lower** (`1.1–1.5`) → more triggers. Picks up softer onsets, but more false fires on flutter.
+- **Higher** (`2.5–4.0`) → stricter. Only the strongest hits fire.
+- `1.8` is a typical default for kick-driven music.">threshold ×<input type="range" id="beat-sensitivity" min="105" max="400" step="5" /> <span id="beat-sensitivity-val"></span></label>
+          <label title="**Refractory** = minimum time between successive beats.
+
+After a beat fires, the detector ignores anything until this much time has passed — even if a second peak shows up. This is the primary defense against double-triggering on a single kick (e.g. body + ring).
+
+- **Smaller** (`100–150 ms`) → allows fast double-time detection (e.g. drum & bass at 174 BPM = ~345 ms/beat; refractory ≤ 170 ms is needed to avoid losing the half-beat).
+- **Larger** (`350–500 ms`) → guarantees one beat per quarter at 120 BPM and below; safer for messy material but rejects fast tempos.
+- `250 ms` covers up to 240 BPM — sane default for most music.">refractory <input type="range" id="beat-refractory" min="100" max="600" step="5" /> <span id="beat-refractory-val"></span></label>
+          <label title="**Slow envelope τ** = time constant of the 'local DC reference' the novelty subtracts from.
+
+Determines what counts as a transient: only rises faster than this τ produce positive novelty. Bigger τ → only very fast snaps register; smaller τ → slow swells also count.
+
+- **Smaller** (`100–200 ms`) → snappier, only sharp transients count. Tight kick / snare detection.
+- **Larger** (`500–1000 ms`) → broader interpretation; reggae offbeat kicks and slower swells get picked up.
+- `300 ms` is a balanced default.">transient τ <input type="range" id="beat-slow-tau" min="100" max="1000" step="10" data-log="1" /> <span id="beat-slow-tau-val"></span></label>
         </fieldset>
 
         <fieldset>

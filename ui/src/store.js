@@ -4,6 +4,11 @@ export const store = {
   // Live signal
   low: 0, mid: 0, high: 0,
   low_raw: 0, mid_raw: 0, high_raw: 0,
+  // Beat detection (server-side onset detector on the low band).
+  // `beat_pulse_t` is the performance.now() timestamp of the most recent
+  // beat=1 snapshot — visualizers use this to drive a decay-based flash.
+  beat_pulse_t: -Infinity,
+  bpm: 0,
   fft_bins: null, // Float32Array
   fft_db_floor: -60,
   fft_db_ceiling: 0,

@@ -113,6 +113,24 @@ def validate_peak_decay_per_s(v):
     return _finite_float(v, "peak_decay_per_s")
 
 
+def validate_beat(sensitivity=None, refractory_s=None, slow_tau_s=None):
+    """Beat-detector tunables. Hard invariants only:
+      - sensitivity > 1.0 (Schmitt high must exceed the slow EMA of novelty
+        itself, otherwise the trigger would always be tripped).
+      - refractory_s > 0 (zero refractory → a single onset retriggers each block).
+      - slow_tau_s > 0 (used as denominator in tau→alpha).
+    UI sliders enforce taste-level ranges; here we only block crashes.
+    """
+    out = {}
+    if sensitivity is not None:
+        out["sensitivity"] = _finite_float(sensitivity, "sensitivity", gt=1.0)
+    if refractory_s is not None:
+        out["refractory_s"] = _finite_float(refractory_s, "refractory_s", gt=0.0)
+    if slow_tau_s is not None:
+        out["slow_tau_s"] = _finite_float(slow_tau_s, "slow_tau_s", gt=0.0)
+    return out
+
+
 def validate_ws_snapshot_hz(hz):
     return int(round(_finite_float(hz, "hz", gt=0.0)))
 

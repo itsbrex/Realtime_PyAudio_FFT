@@ -39,6 +39,10 @@ fft:
   peak_smear_oct: 0.3
   tilt_db_per_oct: 3.5
   send_raw_db: false
+beat:
+  sensitivity: 1.8
+  refractory_s: 0.25
+  slow_tau_s: 0.3
 osc:
   destinations:
   - host: 127.0.0.1

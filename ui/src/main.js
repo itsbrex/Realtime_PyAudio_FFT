@@ -24,6 +24,12 @@ const fft   = makeFft(document.getElementById("viz-fft"));
 onMessage("snapshot", (m) => {
   store.low = m.low; store.mid = m.mid; store.high = m.high;
   store.low_raw = m.low_raw; store.mid_raw = m.mid_raw; store.high_raw = m.high_raw;
+  if (m.beat) store.beat_pulse_t = performance.now();
+  if (typeof m.bpm === "number") {
+    store.bpm = m.bpm;
+    const el = document.getElementById("bpm-readout");
+    if (el) el.textContent = m.bpm > 0 ? `${m.bpm.toFixed(1)} BPM` : "— BPM";
+  }
 });
 
 onMessage("meta", (m) => {

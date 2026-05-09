@@ -241,6 +241,28 @@ export function setupControls() {
   strengthEl.addEventListener("pointerup", () => { if (strDragging) { updateStrength(true); strDragging = false; } });
   const strengthCtl = { setValue: (v) => { strengthEl.value = String(Math.round(v * 100)); strengthLab.textContent = `${Math.round(v * 100)}%`; } };
 
+  // Beat detection — sensitivity / refractory / slow envelope τ.
+  // - sensitivity: slider value is hundredths (105..400 → 1.05..4.00)
+  // - refractory:  slider value is milliseconds (100..600 → 0.10..0.60 s)
+  // - slow τ:      log-scale ms (100..1000 → 0.10..1.00 s)
+  const beatSensEl = document.getElementById("beat-sensitivity");
+  const beatSensLab = document.getElementById("beat-sensitivity-val");
+  const beatSensCtl = bindDragAware(beatSensEl, beatSensLab,
+    (v) => `${(v / 100).toFixed(2)}`,
+    (v) => ({ type: "set_beat", sensitivity: v / 100 }));
+
+  const beatRefrEl = document.getElementById("beat-refractory");
+  const beatRefrLab = document.getElementById("beat-refractory-val");
+  const beatRefrCtl = bindDragAware(beatRefrEl, beatRefrLab,
+    (v) => `${Math.round(v)} ms`,
+    (v) => ({ type: "set_beat", refractory_s: v / 1000 }));
+
+  const beatTauEl = document.getElementById("beat-slow-tau");
+  const beatTauLab = document.getElementById("beat-slow-tau-val");
+  const beatTauCtl = bindDragAware(beatTauEl, beatTauLab,
+    (v) => `${Math.round(v)} ms`,
+    (v) => ({ type: "set_beat", slow_tau_s: v / 1000 }));
+
   // UI refresh rate — discrete slider snapped to industry-standard frame rates.
   // The same value drives the server-side WS snapshot rate AND the browser's
   // RAF render throttle (set in store.target_ui_fps; main.js reads it).
@@ -383,6 +405,10 @@ export function setupControls() {
       masterCtl.setValue(m.autoscale.master_gain ?? 1.0);
       wsCtl.setValue(m.ws_snapshot_hz || 60);
       peakDecayCtl.setValue(m.ui_peak_decay_per_s ?? 0.6);
+      const beat = m.beat || {};
+      beatSensCtl.setValue(Math.round((beat.sensitivity ?? 1.8) * 100));
+      beatRefrCtl.setValue(Math.round((beat.refractory_s ?? 0.25) * 1000));
+      beatTauCtl.setValue(Math.round((beat.slow_tau_s ?? 0.30) * 1000));
       fftToggle.checked = !!m.fft_enabled;
       if (m.fft_send_raw_db !== undefined) fftRawDbCtl.setValue(!!m.fft_send_raw_db);
     },

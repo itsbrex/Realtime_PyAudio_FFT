@@ -76,6 +76,13 @@ class FftCfg:
 
 
 @dataclass
+class BeatCfg:
+    sensitivity: float    # K_HIGH multiplier on adaptive threshold
+    refractory_s: float   # min inter-onset interval (seconds)
+    slow_tau_s: float     # slow envelope tau (seconds)
+
+
+@dataclass
 class OscDest:
     host: str
     port: int
@@ -108,6 +115,7 @@ class Config:
     dsp: DspCfg
     autoscale: AutoscaleCfg
     fft: FftCfg
+    beat: BeatCfg
     osc: OscCfg
     ws: WsCfg
     ui: UiCfg
@@ -166,6 +174,22 @@ def _build_config(d: dict) -> Config:
         send_raw_db=bool(fd["send_raw_db"]),
     )
 
+    # Beat detector — section is optional (added after the initial schema)
+    # so legacy main.yaml files without a `beat:` block keep working with
+    # the BeatTracker's compiled-in defaults.
+    bd = d.get("beat") or {}
+    beat_defaults = {
+        "sensitivity": 1.8,
+        "refractory_s": 0.25,
+        "slow_tau_s": 0.30,
+    }
+    ok_beat = V.validate_beat(
+        sensitivity=bd.get("sensitivity", beat_defaults["sensitivity"]),
+        refractory_s=bd.get("refractory_s", beat_defaults["refractory_s"]),
+        slow_tau_s=bd.get("slow_tau_s", beat_defaults["slow_tau_s"]),
+    )
+    beat = BeatCfg(**ok_beat)
+
     od = d["osc"]
     dests = [OscDest(host=str(x["host"]), port=int(x["port"])) for x in od["destinations"]]
     osc = OscCfg(destinations=dests, send_fft=bool(od["send_fft"]))
@@ -185,7 +209,7 @@ def _build_config(d: dict) -> Config:
         layout=V.validate_ui_layout(ud["layout"]),
     )
 
-    return Config(audio=audio, dsp=dsp, autoscale=autoscale, fft=fft, osc=osc, ws=ws, ui=ui)
+    return Config(audio=audio, dsp=dsp, autoscale=autoscale, fft=fft, beat=beat, osc=osc, ws=ws, ui=ui)
 
 
 def load_config(path: Path | str) -> Config:

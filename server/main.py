@@ -27,6 +27,7 @@ from .audio.ringbuffer import SlotRing
 from .audio.stream import StreamHandle, open_input_stream
 from .config import CANONICAL_CONFIG_PATH, Config, Persister, config_to_dict, load_config
 from .control.dispatcher import Dispatcher
+from .dsp.beat import BeatTracker
 from .dsp.features import AutoScaler, ExpSmoother
 from .dsp.fft import FFTWorker
 from .dsp.fft_postprocess import FFTPostProcessor
@@ -96,6 +97,7 @@ class App:
         self.filter_bank: FilterBank | None = None
         self.smoother: ExpSmoother | None = None
         self.auto_scaler: AutoScaler | None = None
+        self.beat_tracker: BeatTracker | None = None
         self.dsp_worker: DSPWorker | None = None
         self.fft_worker: FFTWorker | None = None
         self.fft_postprocessor: FFTPostProcessor | None = None
@@ -173,6 +175,25 @@ class App:
                 strength=ok.get("strength"),
             )
 
+    def apply_beat(self, ok: dict) -> None:
+        """Apply a validated beat-detector update dict to cfg + tracker.
+
+        `ok` may contain any subset of {sensitivity, refractory_s,
+        slow_tau_s}. Missing keys are unchanged. Tracker setters are atomic
+        (single-attribute writes the worker re-reads on next iteration);
+        no lock needed.
+        """
+        b = self.cfg.beat
+        for k in ("sensitivity", "refractory_s", "slow_tau_s"):
+            if k in ok:
+                setattr(b, k, ok[k])
+        if self.beat_tracker is not None and ok:
+            self.beat_tracker.set_params(
+                sensitivity=ok.get("sensitivity"),
+                refractory_s=ok.get("refractory_s"),
+                slow_tau_s=ok.get("slow_tau_s"),
+            )
+
     def apply_fft_n_bins(self, n: int) -> None:
         self.cfg.fft.n_bins = n
         self.fft_worker.reconfigure(n_bins=n)
@@ -232,6 +253,13 @@ class App:
             db_floor=cfg.fft.db_floor,
             db_ceiling=cfg.fft.db_ceiling,
         )
+        self.beat_tracker = BeatTracker(
+            sr=sr,
+            blocksize=cfg.audio.blocksize,
+            sensitivity=cfg.beat.sensitivity,
+            refractory_s=cfg.beat.refractory_s,
+            slow_tau_s=cfg.beat.slow_tau_s,
+        )
 
     def _signal_dsp_published(self) -> None:
         """Called from the DSP / FFT worker threads on each publish.
@@ -288,6 +316,7 @@ class App:
             filter_bank=self.filter_bank,
             smoother=self.smoother,
             auto_scaler=self.auto_scaler,
+            beat_tracker=self.beat_tracker,
             features_store=self.features_store,
             on_publish=self._signal_dsp_published,
             blocksize=cfg.audio.blocksize,
@@ -443,6 +472,11 @@ class App:
                 "noise_floor": cfg.autoscale.noise_floor,
                 "strength": cfg.autoscale.strength,
                 "master_gain": cfg.autoscale.master_gain,
+            },
+            "beat": {
+                "sensitivity": cfg.beat.sensitivity,
+                "refractory_s": cfg.beat.refractory_s,
+                "slow_tau_s": cfg.beat.slow_tau_s,
             },
             "ws_snapshot_hz": self.ws.snapshot_hz if self.ws else cfg.ws.snapshot_hz,
             "ui_peak_decay_per_s": cfg.ui.peak_decay_per_s,
@@ -632,6 +666,11 @@ class App:
                 db_floor=self.cfg.fft.db_floor,
                 db_ceiling=self.cfg.fft.db_ceiling,
             )
+            # Beat tracker: alphas depend on dt = blocksize / sr. User-tuned
+            # params (sensitivity / refractory / slow_tau_s) are persisted on
+            # the instance and survive reconfigure().
+            self.beat_tracker.reconfigure(new_sr, self.cfg.audio.blocksize)
+            self.beat_tracker.reset()
             # Swap into worker
             self.dsp_worker.filter_bank = self.filter_bank
             self.dsp_worker.smoother = self.smoother

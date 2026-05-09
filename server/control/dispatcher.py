@@ -191,6 +191,7 @@ class Dispatcher:
         d = data.get("dsp", {}) or {}
         f = data.get("fft", {}) or {}
         a = data.get("autoscale", {}) or {}
+        beat = data.get("beat", {}) or {}
 
         with _preset_section("dsp.bands", applied):
             bands_raw = {k: d.get(k) for k in ("low", "mid", "high") if isinstance(d.get(k), dict)}
@@ -250,6 +251,16 @@ class Dispatcher:
                 raise _SkipSection
             self.app.apply_fft_tilt(V.validate_fft_tilt_db_per_oct(f["tilt_db_per_oct"]))
 
+        with _preset_section("beat", applied):
+            ok = V.validate_beat(
+                sensitivity=beat.get("sensitivity"),
+                refractory_s=beat.get("refractory_s"),
+                slow_tau_s=beat.get("slow_tau_s"),
+            )
+            if not ok:
+                raise _SkipSection
+            self.app.apply_beat(ok)
+
         if not applied:
             raise ValueError(f"preset {name!r} produced no valid fields")
         self.app.persister.request(commit=True)
@@ -289,6 +300,19 @@ class Dispatcher:
         self.app.persister.request(commit=commit)
         return [], [{"type": "meta", **self.app.snapshot_meta()}]
 
+    async def _set_beat(self, msg):
+        commit = bool(msg.get("commit", True))
+        ok = V.validate_beat(
+            sensitivity=msg.get("sensitivity"),
+            refractory_s=msg.get("refractory_s"),
+            slow_tau_s=msg.get("slow_tau_s"),
+        )
+        if not ok:
+            raise ValueError("set_beat needs at least one of sensitivity / refractory_s / slow_tau_s")
+        self.app.apply_beat(ok)
+        self.app.persister.request(commit=commit)
+        return [], [{"type": "meta", **self.app.snapshot_meta()}]
+
     _handlers = {
         "set_fft": _set_fft,
         "set_band": _set_band,
@@ -301,6 +325,7 @@ class Dispatcher:
         "set_fft_send_raw_db": _set_fft_send_raw_db,
         "set_fft_peak_smear": _set_fft_peak_smear,
         "set_fft_tilt": _set_fft_tilt,
+        "set_beat": _set_beat,
         "set_peak_decay": _set_peak_decay,
         "set_ui_layout": _set_ui_layout,
         "list_presets": _list_presets,

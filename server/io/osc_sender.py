@@ -22,6 +22,23 @@ _LMH_TEMPLATE = b"/audio/lmh\x00\x00,fff\x00\x00\x00\x00" + b"\x00" * 12
 _LMH_FLOAT_OFFSET = 20
 _LMH_PACK = struct.Struct("!fff").pack_into
 
+# Pre-encoded "/audio/beat ,i <int=1>". Beat is sent ONLY on onset blocks
+# (no zero pulses), so the value is always 1 and the whole packet is a
+# constant — no per-send packing.
+# "/audio/beat" (11 bytes) + NUL padding to 12 (1 NUL) = 12.
+# ",i" (2 bytes) + NUL padding to 4 (2 NULs) = 4.
+# int32 BE = 4 bytes (value 1 = "\x00\x00\x00\x01").
+# Total: 20 bytes.
+_BEAT_PACKET = b"/audio/beat\x00,i\x00\x00\x00\x00\x00\x01"
+
+# Pre-encoded "/audio/bpm ,f <f>". Float arg is mutated in place.
+# "/audio/bpm" (10 bytes) + NUL padding to 12 (2 NULs) = 12.
+# ",f" (2 bytes) + NUL padding to 4 (2 NULs) = 4.
+# float32 BE = 4 bytes. Float starts at offset 16. Total: 20.
+_BPM_TEMPLATE = b"/audio/bpm\x00\x00,f\x00\x00\x00\x00\x00\x00"
+_BPM_FLOAT_OFFSET = 16
+_BPM_PACK = struct.Struct("!f").pack_into
+
 
 class OscSender:
     def __init__(self, destinations: list[OscDest]):
@@ -32,6 +49,7 @@ class OscSender:
         # preallocated packet buffer and sending it via raw UDP. Zero
         # allocation per send.
         self._lmh_buf = bytearray(_LMH_TEMPLATE)
+        self._bpm_buf = bytearray(_BPM_TEMPLATE)
         self._udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._udp_sock.setblocking(False)
         self._addrs = [(d.host, int(d.port)) for d in self._dests]
@@ -66,6 +84,30 @@ class OscSender:
                 sock.sendto(buf, addr)
             except Exception as e:
                 log.debug("osc lmh send failed: %s", e)
+
+    def send_beat(self) -> None:
+        """Sends `/audio/beat 1`. Constant packet — no packing needed.
+        Called only on onset blocks; absence of a beat is silence on this
+        address (no `0`s sent), giving downstream consumers a clean
+        rising-edge trigger semantic."""
+        sock = self._udp_sock
+        for addr in self._addrs:
+            try:
+                sock.sendto(_BEAT_PACKET, addr)
+            except Exception as e:
+                log.debug("osc beat send failed: %s", e)
+
+    def send_bpm(self, bpm: float) -> None:
+        """Sends `/audio/bpm <f>`. Per-block; cheap (4-byte float pack +
+        20-byte UDP packet). Downstream caches whatever was last received."""
+        _BPM_PACK(self._bpm_buf, _BPM_FLOAT_OFFSET, float(bpm))
+        buf = self._bpm_buf
+        sock = self._udp_sock
+        for addr in self._addrs:
+            try:
+                sock.sendto(buf, addr)
+            except Exception as e:
+                log.debug("osc bpm send failed: %s", e)
 
     def _ensure_fft_scratch(self, n: int) -> np.ndarray:
         s = self._fft_scratch
@@ -135,11 +177,14 @@ async def osc_sender_task(stop, sender_event: asyncio.Event, sender: OscSender,
         sender_event.clear()
         if stop.is_set():
             return
-        seq, t_recv_ns = features_store.read_scaled_into(scaled_scratch)
+        seq, t_recv_ns, beat, bpm = features_store.read_scaled_into(scaled_scratch)
         if seq != last_seq:
             last_seq = seq
             g = get_master_gain()
             sender.send_lmh(scaled_scratch[0] * g, scaled_scratch[1] * g, scaled_scratch[2] * g)
+            sender.send_bpm(bpm)
+            if beat:
+                sender.send_beat()
             if perf_lmh_e2e is not None and t_recv_ns:
                 latency = time.perf_counter_ns() - t_recv_ns
                 if latency > 0:
