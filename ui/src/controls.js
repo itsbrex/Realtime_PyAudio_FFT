@@ -332,13 +332,14 @@ export function setupControls() {
   writeSlider(historyEl, Math.max(2, Math.min(30, store.lines_history_s ?? 5)));
   updateHistory();
 
-  // Bandpass filter order. Server-authoritative; reflected from meta.
-  const filterOrderEl = document.getElementById("filter-order");
-  filterOrderEl.addEventListener("change", () => {
-    const n = parseInt(filterOrderEl.value, 10);
-    if (Number.isFinite(n)) send({ type: "set_filter_order", order: n });
-  });
-  const filterOrderCtl = { setValue: (v) => { filterOrderEl.value = String(v); } };
+  // Bandpass filter order. Slider snaps to {2, 4} only (min=2, max=4, step=2).
+  // Server-authoritative; reflected from meta.
+  const filterOrderCtl = bindDragAware(
+    document.getElementById("filter-order"),
+    document.getElementById("filter-order-val"),
+    (v) => `${v} (~${6 * v} dB/oct)`,
+    (v) => ({ type: "set_filter_order", order: v }),
+  );
 
   // FFT toggle
   const fftToggle = document.getElementById("fft-toggle");
