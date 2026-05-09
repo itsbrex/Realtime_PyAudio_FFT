@@ -50,6 +50,7 @@ class DspCfg:
     high: BandCfg
     tau: dict
     tau_attack: dict
+    filter_order: int
 
 
 @dataclass
@@ -148,6 +149,9 @@ def _build_config(d: dict) -> Config:
         high=BandCfg(*ok["high"]),
         tau=V.validate_tau(ds["tau"]),
         tau_attack=V.validate_tau(ds["tau_attack"]),
+        # filter_order added after the initial schema; default to 2 (cheap,
+        # 12 dB/oct skirt — plenty for envelope/beat use).
+        filter_order=V.validate_filter_order(ds.get("filter_order", 2)),
     )
 
     asd = d["autoscale"]

@@ -300,6 +300,13 @@ class Dispatcher:
         self.app.persister.request(commit=commit)
         return [], [{"type": "meta", **self.app.snapshot_meta()}]
 
+    async def _set_filter_order(self, msg):
+        commit = bool(msg.get("commit", True))
+        n = V.validate_filter_order(msg.get("order"))
+        self.app.apply_filter_order(n)
+        self.app.persister.request(commit=commit)
+        return [], [{"type": "meta", **self.app.snapshot_meta()}]
+
     async def _set_beat(self, msg):
         commit = bool(msg.get("commit", True))
         ok = V.validate_beat(
@@ -326,6 +333,7 @@ class Dispatcher:
         "set_fft_peak_smear": _set_fft_peak_smear,
         "set_fft_tilt": _set_fft_tilt,
         "set_beat": _set_beat,
+        "set_filter_order": _set_filter_order,
         "set_peak_decay": _set_peak_decay,
         "set_ui_layout": _set_ui_layout,
         "list_presets": _list_presets,

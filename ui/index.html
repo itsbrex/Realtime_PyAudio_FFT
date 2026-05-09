@@ -140,6 +140,18 @@ Devices that saw audio during the probe get a ★.
 - Click outside any band to deselect.
 
 Bands may overlap."></div>
+          <label class="inline" title="**Butterworth bandpass order** for all three L/M/H bands.
+
+Each step adds one biquad per band (3 biquads total at order 1, 24 at order 8). CPU scales linearly. The output is RMS-integrated, so steeper skirts buy you very little visible — order 2 (12 dB/oct) is plenty for envelope/beat work and is the recommended default on slower hardware (e.g. Raspberry Pi). Bump higher only if you actually see band leakage on the bars/lines viz.">order
+            <select id="filter-order">
+              <option value="1">1 (~6 dB/oct)</option>
+              <option value="2">2 (~12 dB/oct)</option>
+              <option value="3">3 (~18 dB/oct)</option>
+              <option value="4">4 (~24 dB/oct)</option>
+              <option value="6">6 (~36 dB/oct)</option>
+              <option value="8">8 (~48 dB/oct)</option>
+            </select>
+          </label>
         </fieldset>
 
         <fieldset>

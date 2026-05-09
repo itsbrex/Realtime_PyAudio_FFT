@@ -59,6 +59,14 @@ class FilterBank:
             self._init_state()
             self.bands = {k: (float(v[0]), float(v[1])) for k, v in bands.items()}
 
+    def set_order(self, order: int) -> None:
+        """Change the Butterworth order for all three bands. Higher order →
+        steeper skirts, more biquads, more CPU. Brief click on change."""
+        with self._lock:
+            self.order = int(order)
+            self._design(self.bands)
+            self._init_state()
+
     def reset_state(self) -> None:
         with self._lock:
             self._init_state()

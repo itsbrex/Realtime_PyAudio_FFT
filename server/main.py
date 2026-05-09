@@ -224,6 +224,14 @@ class App:
         if self.fft_postprocessor is not None:
             self.fft_postprocessor.update_tilt(v)
 
+    def apply_filter_order(self, n: int) -> None:
+        """Change Butterworth order of all three L/M/H bandpasses live.
+        Brief click on change (filter state resets); the user is consciously
+        making a fast/precise tradeoff."""
+        self.cfg.dsp.filter_order = int(n)
+        if self.filter_bank is not None:
+            self.filter_bank.set_order(n)
+
     def apply_fft_peak_smear(self, v: float) -> None:
         self.cfg.fft.peak_smear_oct = v
         if self.fft_postprocessor is not None:
@@ -235,6 +243,7 @@ class App:
             sr=sr,
             bands=self._bands_tuple_dict(),
             blocksize=cfg.audio.blocksize,
+            order=cfg.dsp.filter_order,
         )
         self.smoother = ExpSmoother(sr=sr, blocksize=cfg.audio.blocksize,
                                     tau=cfg.dsp.tau, tau_attack=cfg.dsp.tau_attack)
@@ -466,6 +475,7 @@ class App:
             "fft_tilt_db_per_oct": cfg.fft.tilt_db_per_oct,
             "tau": dict(cfg.dsp.tau),
             "tau_attack": dict(cfg.dsp.tau_attack),
+            "filter_order": cfg.dsp.filter_order,
             "autoscale": {
                 "tau_attack_s": cfg.autoscale.tau_attack_s,
                 "tau_release_s": cfg.autoscale.tau_release_s,
@@ -644,6 +654,7 @@ class App:
                 sr=new_sr,
                 bands=self._bands_tuple_dict(),
                 blocksize=self.cfg.audio.blocksize,
+                order=self.cfg.dsp.filter_order,
             )
             self.smoother = ExpSmoother(
                 sr=new_sr,

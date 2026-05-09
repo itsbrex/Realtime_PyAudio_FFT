@@ -77,6 +77,18 @@ def validate_tau(tau_dict):
     return out
 
 
+def validate_filter_order(n):
+    """Per-band Butterworth bandpass order. 1..8 covers the useful range
+    (1 → ~6 dB/oct skirt, 8 → ~48 dB/oct). CPU cost scales linearly with
+    order (sosfilt biquad count), so this is the main "fast vs. precise"
+    knob for the L/M/H pipeline."""
+    if not isinstance(n, int) or isinstance(n, bool):
+        raise ValueError("filter_order must be an int")
+    if not (1 <= n <= 8):
+        raise ValueError("filter_order must be in 1..8")
+    return n
+
+
 def validate_n_fft_bins(n):
     if not isinstance(n, int) or isinstance(n, bool):
         raise ValueError("n_fft_bins must be an int")

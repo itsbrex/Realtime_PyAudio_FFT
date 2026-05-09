@@ -332,6 +332,14 @@ export function setupControls() {
   writeSlider(historyEl, Math.max(2, Math.min(30, store.lines_history_s ?? 5)));
   updateHistory();
 
+  // Bandpass filter order. Server-authoritative; reflected from meta.
+  const filterOrderEl = document.getElementById("filter-order");
+  filterOrderEl.addEventListener("change", () => {
+    const n = parseInt(filterOrderEl.value, 10);
+    if (Number.isFinite(n)) send({ type: "set_filter_order", order: n });
+  });
+  const filterOrderCtl = { setValue: (v) => { filterOrderEl.value = String(v); } };
+
   // FFT toggle
   const fftToggle = document.getElementById("fft-toggle");
   fftToggle.addEventListener("change", () => {
@@ -409,6 +417,7 @@ export function setupControls() {
       beatSensCtl.setValue(Math.round((beat.sensitivity ?? 1.8) * 100));
       beatRefrCtl.setValue(Math.round((beat.refractory_s ?? 0.25) * 1000));
       beatTauCtl.setValue(Math.round((beat.slow_tau_s ?? 0.30) * 1000));
+      if (m.filter_order !== undefined) filterOrderCtl.setValue(m.filter_order);
       fftToggle.checked = !!m.fft_enabled;
       if (m.fft_send_raw_db !== undefined) fftRawDbCtl.setValue(!!m.fft_send_raw_db);
     },
