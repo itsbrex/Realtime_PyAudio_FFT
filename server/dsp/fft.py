@@ -7,6 +7,8 @@ import time
 
 import numpy as np
 
+from ..io.osc_publisher import OscPublisher
+
 log = logging.getLogger(__name__)
 
 MAX_BACKLOG_HOPS = 2
@@ -52,7 +54,8 @@ def build_log_bin_map(window_size: int, sr: float, n_bins: int, f_min: float):
 
 class FFTWorker(threading.Thread):
     def __init__(self, ring, fft_event: threading.Event, fft_enabled: threading.Event,
-                 stop_flag: threading.Event, fft_store, on_publish,
+                 stop_flag: threading.Event, fft_store,
+                 osc_publisher: OscPublisher | None,
                  blocksize: int, sr: float, window_size: int, hop: int,
                  n_bins: int, f_min: float, perf_ring: np.ndarray,
                  db_floor: float = -60.0, post_processor=None):
@@ -62,7 +65,8 @@ class FFTWorker(threading.Thread):
         self.fft_enabled = fft_enabled
         self.stop_flag = stop_flag
         self.fft_store = fft_store
-        self.on_publish = on_publish
+        # Direct OSC dispatch on this thread — see DSPWorker for rationale.
+        self.osc_publisher = osc_publisher
         self.blocksize = blocksize
         self.sr = float(sr)
         self.window_size = int(window_size)
@@ -262,10 +266,13 @@ class FFTWorker(threading.Thread):
                         processed = self.post_processor.process(bins_f32)
                     self.fft_store.publish(bins_f32, processed, t_recv_ns)
                     self._wire_idx ^= 1
-                    try:
-                        self.on_publish()
-                    except Exception as e:
-                        log.debug("fft on_publish raised: %s", e)
+                    # Direct OSC dispatch on this thread (skip if disabled
+                    # via cfg.osc.send_fft / fft_enabled — the publisher
+                    # checks both internally).
+                    if self.osc_publisher is not None:
+                        self.osc_publisher.publish_fft(
+                            bins_f32, processed, t_recv_ns,
+                        )
                     t1 = time.perf_counter_ns()
                     i = self.perf_idx
                     self.perf_ring[i % self.perf_len] = t1 - t0

@@ -34,7 +34,8 @@ from .dsp.filters import FilterBank
 from .dsp.onset import OnsetTracker
 from .dsp.worker import DSPWorker
 from .io.http_server import StaticHTTPServer
-from .io.osc_sender import OscSender, osc_sender_task
+from .io.osc_publisher import OscPublisher
+from .io.osc_sender import OscSender
 from .io.stores import FFTStore, FeatureStore
 from .io.ws_server import WSServer
 
@@ -89,7 +90,6 @@ class App:
 
         # ----- Async / loop bits -----
         self.loop: asyncio.AbstractEventLoop | None = None
-        self.sender_event: asyncio.Event | None = None  # set by DSP via call_soon_threadsafe
 
         # ----- Initialised by start() -----
         self.callback: AudioCallback | None = None
@@ -102,7 +102,7 @@ class App:
         self.fft_worker: FFTWorker | None = None
         self.fft_postprocessor: FFTPostProcessor | None = None
         self.osc_sender: OscSender | None = None
-        self.osc_task: asyncio.Task | None = None
+        self.osc_publisher: OscPublisher | None = None
         self.ws: WSServer | None = None
         self.http: StaticHTTPServer | None = None
         self.persister: Persister | None = None
@@ -284,26 +284,9 @@ class App:
             },
         )
 
-    def _signal_dsp_published(self) -> None:
-        """Called from the DSP / FFT worker threads on each publish.
-
-        Posts sender_event.set() onto the asyncio loop so the OSC sender
-        wakes promptly. Schedules from a worker thread, so we use
-        call_soon_threadsafe.
-        """
-        loop = self.loop
-        ev = self.sender_event
-        if loop is None or ev is None:
-            return
-        try:
-            loop.call_soon_threadsafe(ev.set)
-        except RuntimeError:
-            pass  # loop closed during shutdown
-
     def start(self) -> None:
         cfg = self.cfg
         self.loop = asyncio.get_event_loop()
-        self.sender_event = asyncio.Event()
         self._device_switch_lock = asyncio.Lock()
 
         # -------- Resolve & open audio device --------
@@ -331,6 +314,21 @@ class App:
 
         self._build_pipeline_for_sr(self.stream.samplerate)
 
+        # -------- OSC: wire sender + publisher BEFORE workers so they can
+        # dispatch directly on their own threads (no asyncio hop). --------
+        self.osc_sender = OscSender(cfg.osc.destinations)
+        self.osc_publisher = OscPublisher(
+            self.osc_sender,
+            get_master_gain=lambda: self.cfg.autoscale.master_gain,
+            get_db_floor=lambda: self.cfg.fft.db_floor,
+            get_send_fft=lambda: self.cfg.osc.send_fft,
+            get_send_raw_db=lambda: self.cfg.fft.send_raw_db,
+            get_fft_enabled=lambda: self.fft_enabled.is_set(),
+            perf_lmh_e2e=self.perf_lmh_e2e,
+            perf_fft_e2e=self.perf_fft_e2e,
+            perf_idx_state=self.perf_e2e_idx,
+        )
+
         # -------- Workers --------
         self.dsp_worker = DSPWorker(
             ring=self.ring,
@@ -341,7 +339,7 @@ class App:
             auto_scaler=self.auto_scaler,
             onset_tracker=self.onset_tracker,
             features_store=self.features_store,
-            on_publish=self._signal_dsp_published,
+            osc_publisher=self.osc_publisher,
             blocksize=cfg.audio.blocksize,
             perf_ring=self.perf_dsp,
         )
@@ -368,7 +366,7 @@ class App:
             fft_enabled=self.fft_enabled,
             stop_flag=self.stop_flag,
             fft_store=self.fft_store,
-            on_publish=self._signal_dsp_published,  # share — OSC FFT uses same wakeup
+            osc_publisher=self.osc_publisher,
             blocksize=cfg.audio.blocksize,
             sr=self.stream.samplerate,
             window_size=cfg.fft.window_size,
@@ -382,31 +380,12 @@ class App:
         self.dsp_worker.start()
         self.fft_worker.start()
 
-        # -------- OSC --------
-        self.osc_sender = OscSender(cfg.osc.destinations)
+        # Send the one-shot OSC meta packet now that the sender is wired.
         self.osc_sender.send_meta(
             sr=int(self.stream.samplerate),
             blocksize=cfg.audio.blocksize,
             n_fft_bins=cfg.fft.n_bins,
             bands=self._bands_tuple_dict(),
-        )
-        self.osc_task = self.loop.create_task(
-            osc_sender_task(
-                stop=self.stop_flag,
-                sender_event=self.sender_event,
-                sender=self.osc_sender,
-                features_store=self.features_store,
-                fft_store=self.fft_store,
-                get_send_fft=lambda: self.cfg.osc.send_fft,
-                get_fft_enabled=lambda: self.fft_enabled.is_set(),
-                get_db_floor=lambda: self.cfg.fft.db_floor,
-                get_send_raw_db=lambda: self.cfg.fft.send_raw_db,
-                get_master_gain=lambda: self.cfg.autoscale.master_gain,
-                perf_lmh_e2e=self.perf_lmh_e2e,
-                perf_fft_e2e=self.perf_fft_e2e,
-                perf_idx_state=self.perf_e2e_idx,
-            ),
-            name="osc-sender",
         )
 
         # -------- Persister --------
@@ -750,12 +729,6 @@ class App:
         for w in (self.dsp_worker, self.fft_worker):
             if w is not None:
                 w.join(timeout=1.0)
-        if self.osc_task is not None:
-            self.osc_task.cancel()
-            try:
-                await self.osc_task
-            except (asyncio.CancelledError, Exception):
-                pass
         if self.ws is not None:
             await self.ws.stop()
         if self.http is not None:

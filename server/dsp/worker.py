@@ -10,6 +10,7 @@ import numpy as np
 from .features import ExpSmoother, AutoScaler, block_rms
 from .filters import FilterBank
 from .onset import OnsetTracker
+from ..io.osc_publisher import OscPublisher
 
 log = logging.getLogger(__name__)
 
@@ -20,7 +21,8 @@ class DSPWorker(threading.Thread):
     def __init__(self, ring, dsp_event: threading.Event, stop_flag: threading.Event,
                  filter_bank: FilterBank, smoother: ExpSmoother, auto_scaler: AutoScaler,
                  onset_tracker: OnsetTracker,
-                 features_store, on_publish, blocksize: int, perf_ring: np.ndarray):
+                 features_store, osc_publisher: OscPublisher | None,
+                 blocksize: int, perf_ring: np.ndarray):
         super().__init__(name="dsp-worker", daemon=True)
         self.ring = ring
         self.dsp_event = dsp_event
@@ -30,7 +32,9 @@ class DSPWorker(threading.Thread):
         self.auto_scaler = auto_scaler
         self.onset_tracker = onset_tracker
         self.features_store = features_store
-        self.on_publish = on_publish  # threadsafe callback (e.g. set sender_event)
+        # OSC is dispatched directly from this worker thread (no asyncio
+        # hop). May be None in test / headless setups; absence skips OSC.
+        self.osc_publisher = osc_publisher
         self.blocksize = blocksize
         self.dsp_in = np.zeros(blocksize, dtype=np.float32)
         self.scaled_buf = np.zeros(3, dtype=np.float64)
@@ -100,10 +104,16 @@ class DSPWorker(threading.Thread):
                         self.onsets_buf, self.onset_tracker.onset_count, bpm,
                         t_recv_ns,
                     )
-                    try:
-                        self.on_publish()
-                    except Exception as e:
-                        log.debug("on_publish raised: %s", e)
+                    # Direct OSC dispatch on this thread — replaces the old
+                    # asyncio sender task. ~100 µs faster typical, much
+                    # tighter tail (no scheduling jitter from WS / HTTP
+                    # activity on the loop). publish_lmh internally swallows
+                    # send exceptions so a UDP hiccup never breaks the DSP
+                    # cycle.
+                    if self.osc_publisher is not None:
+                        self.osc_publisher.publish_lmh(
+                            self.scaled_buf, self.onsets_buf, bpm, t_recv_ns,
+                        )
                     t1 = time.perf_counter_ns()
                     i = self.perf_idx
                     self.perf_ring[i % self.perf_len] = t1 - t0

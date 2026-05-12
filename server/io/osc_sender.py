@@ -1,11 +1,25 @@
-"""OSC UDP sender. One SimpleUDPClient per destination."""
+"""OSC UDP wire layer.
+
+Pure synchronous packet builder + UDP sendto. No event loop, no threads.
+Each address has a pre-encoded packet template; hot-path sends mutate the
+float payload in place and call `sendto` — zero allocation per packet.
+
+Thread-safety:
+  * Each `send_*` method mutates its own packet bytearray. As long as a
+    given method is only called from one thread, no locking is needed.
+    Current usage: LMH/onset/BPM from the DSP worker; FFT from the FFT
+    worker. The two methods touch disjoint buffers.
+  * The shared UDP socket is thread-safe at the kernel level (`sendto`
+    releases the GIL and is atomic at the OS layer for datagrams).
+
+`send_meta` is the only path still using pythonosc (variable-shape payload,
+called rarely from the asyncio loop).
+"""
 from __future__ import annotations
 
-import asyncio
 import logging
 import socket
 import struct
-import time
 
 import numpy as np
 from pythonosc.udp_client import SimpleUDPClient
@@ -47,6 +61,28 @@ _BPM_FLOAT_OFFSET = 16
 _BPM_PACK = struct.Struct("!f").pack_into
 
 
+def _build_fft_packet(n_bins: int) -> tuple[bytearray, np.ndarray, int]:
+    """Build an "/audio/fft ,ff...f <f32 * n_bins>" packet template.
+
+    Returns (buf, payload_view, payload_offset) where `payload_view` is a
+    big-endian f32 numpy view writable into the packet's payload region.
+    Writing native-endian floats into this view auto-byteswaps to BE on copy.
+    """
+    addr = b"/audio/fft"
+    # OSC: pad to next multiple of 4 with at least one NUL.
+    addr_padded_len = ((len(addr) // 4) + 1) * 4
+    addr_field = addr.ljust(addr_padded_len, b"\x00")
+    tag = b"," + b"f" * n_bins
+    tag_padded_len = ((len(tag) // 4) + 1) * 4
+    tag_field = tag.ljust(tag_padded_len, b"\x00")
+    payload_offset = len(addr_field) + len(tag_field)
+    buf = bytearray(payload_offset + n_bins * 4)
+    buf[:payload_offset] = addr_field + tag_field
+    # writable view because bytearray exposes a mutable buffer.
+    payload_view = np.frombuffer(buf, dtype=">f4", count=n_bins, offset=payload_offset)
+    return buf, payload_view, payload_offset
+
+
 class OscSender:
     def __init__(self, destinations: list[OscDest]):
         self._dests = list(destinations)
@@ -60,10 +96,23 @@ class OscSender:
         self._udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._udp_sock.setblocking(False)
         self._addrs = [(d.host, int(d.port)) for d in self._dests]
-        # Preallocated f32 scratch for FFT sends; resized lazily if n_bins
-        # changes (rare). Avoids a per-hop n_bins-sized alloc from
-        # `np.maximum(bins, db_floor)` and `arr * gain`.
+        # FFT packet template — lazy-built on first send and rebuilt only
+        # when n_bins changes (rare, via UI). The native-endian scratch
+        # holds the clamped / gain-multiplied frame before the byteswap
+        # copy into the BE payload view.
+        self._fft_n_bins: int = 0
+        self._fft_buf: bytearray | None = None
+        self._fft_payload_view: np.ndarray | None = None
         self._fft_scratch: np.ndarray | None = None
+
+    def _ensure_fft_packet(self, n_bins: int) -> tuple[bytearray, np.ndarray, np.ndarray]:
+        if self._fft_n_bins != n_bins or self._fft_buf is None:
+            buf, view, _ = _build_fft_packet(n_bins)
+            self._fft_buf = buf
+            self._fft_payload_view = view
+            self._fft_scratch = np.empty(n_bins, dtype=np.float32)
+            self._fft_n_bins = n_bins
+        return self._fft_buf, self._fft_payload_view, self._fft_scratch
 
     def send_meta(self, sr: int, blocksize: int, n_fft_bins: int, bands: dict) -> None:
         # Payload: [sr, blocksize, n_fft_bins, low_lo, low_hi, mid_lo, mid_hi, high_lo, high_hi]
@@ -117,103 +166,37 @@ class OscSender:
             except Exception as e:
                 log.debug("osc bpm send failed: %s", e)
 
-    def _ensure_fft_scratch(self, n: int) -> np.ndarray:
-        s = self._fft_scratch
-        if s is None or s.size != n:
-            s = np.empty(n, dtype=np.float32)
-            self._fft_scratch = s
-        return s
-
     def send_fft(self, bins: np.ndarray, db_floor: float) -> None:
-        # OSC 'f' tag is 32-bit float. The wire array contains -1000 sentinels
-        # for empty log bins; np.maximum clamps both those (and any sub-floor
-        # real values, harmless) to db_floor in a single fused C pass. We
-        # write into a preallocated scratch so the publisher's buffer stays
-        # untouched (still being read by the WS encoder concurrently) without
-        # a per-hop allocation.
-        scratch = self._ensure_fft_scratch(bins.shape[0])
+        """Send raw-dB FFT frame. Clamps sentinels (-1000) and any sub-floor
+        values to `db_floor` in a single fused C pass into a native-endian
+        scratch, then byteswap-copies into the BE payload view of the
+        preallocated packet buffer. Zero allocation per call."""
+        n = int(bins.shape[0])
+        buf, payload_view, scratch = self._ensure_fft_packet(n)
         np.maximum(bins, np.float32(db_floor), out=scratch)
-        payload = scratch.tolist()
-        for c in self._clients:
+        np.copyto(payload_view, scratch)  # native f32 → BE f32 (byteswap)
+        sock = self._udp_sock
+        for addr in self._addrs:
             try:
-                c.send_message("/audio/fft", payload)
+                sock.sendto(buf, addr)
             except Exception as e:
                 log.debug("osc fft send failed: %s", e)
 
     def send_fft_processed(self, bins: np.ndarray, gain: float = 1.0) -> None:
-        # Post-processed values are already in [0, 1] (no sentinels). master
-        # gain >1 may push them above 1.0 — that's by design and downstream
-        # consumers must accept it.
+        """Send post-processed FFT frame, optionally scaled by master gain.
+        Master gain >1 may push bins above 1.0 — by design; downstream must
+        accept it. Zero allocation per call (gain==1.0 byteswaps directly
+        from the source array; gain!=1.0 fuses the multiply into scratch)."""
+        n = int(bins.shape[0])
+        buf, payload_view, scratch = self._ensure_fft_packet(n)
         if gain != 1.0:
-            scratch = self._ensure_fft_scratch(bins.shape[0])
             np.multiply(bins, np.float32(gain), out=scratch)
-            payload = scratch.tolist()
+            np.copyto(payload_view, scratch)
         else:
-            # tolist() itself allocates a Python list (unavoidable for
-            # pythonosc), but skip the array multiply.
-            payload = bins.tolist()
-        for c in self._clients:
+            np.copyto(payload_view, bins)
+        sock = self._udp_sock
+        for addr in self._addrs:
             try:
-                c.send_message("/audio/fft", payload)
+                sock.sendto(buf, addr)
             except Exception as e:
                 log.debug("osc fft send failed: %s", e)
-
-
-async def osc_sender_task(stop, sender_event: asyncio.Event, sender: OscSender,
-                          features_store, fft_store, get_send_fft, get_fft_enabled,
-                          get_db_floor, get_send_raw_db, get_master_gain,
-                          perf_lmh_e2e: np.ndarray | None = None,
-                          perf_fft_e2e: np.ndarray | None = None,
-                          perf_idx_state: dict | None = None):
-    """Wakes on sender_event; sends one /audio/lmh per audio block.
-
-    `perf_lmh_e2e` / `perf_fft_e2e` are optional int64 ring buffers (ns); when
-    provided, end-to-end latency from audio-block receive to OSC dispatch is
-    written into them. `perf_idx_state` is a shared dict so the App can read
-    the write index for ring statistics.
-    """
-    last_seq = 0
-    last_fft_seq = 0
-    lmh_len = perf_lmh_e2e.shape[0] if perf_lmh_e2e is not None else 0
-    fft_len = perf_fft_e2e.shape[0] if perf_fft_e2e is not None else 0
-    scaled_scratch = np.zeros(3, dtype=np.float64)
-    while not stop.is_set():
-        try:
-            await asyncio.wait_for(sender_event.wait(), timeout=0.25)
-        except asyncio.TimeoutError:
-            continue
-        sender_event.clear()
-        if stop.is_set():
-            return
-        seq, t_recv_ns, onsets, bpm = features_store.read_scaled_into(scaled_scratch)
-        if seq != last_seq:
-            last_seq = seq
-            g = get_master_gain()
-            sender.send_lmh(scaled_scratch[0] * g, scaled_scratch[1] * g, scaled_scratch[2] * g)
-            sender.send_bpm(bpm)
-            if onsets[0]: sender.send_onset(0)
-            if onsets[1]: sender.send_onset(1)
-            if onsets[2]: sender.send_onset(2)
-            if perf_lmh_e2e is not None and t_recv_ns:
-                latency = time.perf_counter_ns() - t_recv_ns
-                if latency > 0:
-                    i = perf_idx_state["lmh"]
-                    perf_lmh_e2e[i % lmh_len] = latency
-                    perf_idx_state["lmh"] = i + 1
-        if get_send_fft() and get_fft_enabled():
-            kind = "raw_db" if get_send_raw_db() else "processed"
-            fseq, frame, ft_recv_ns = fft_store.read(kind)
-            if fseq != last_fft_seq and frame is not None:
-                last_fft_seq = fseq
-                if kind == "raw_db":
-                    # Master gain is a feature-output multiplier; it does not
-                    # apply to the raw dB monitor stream.
-                    sender.send_fft(frame, get_db_floor())
-                else:
-                    sender.send_fft_processed(frame, get_master_gain())
-                if perf_fft_e2e is not None and ft_recv_ns:
-                    latency = time.perf_counter_ns() - ft_recv_ns
-                    if latency > 0:
-                        i = perf_idx_state["fft"]
-                        perf_fft_e2e[i % fft_len] = latency
-                        perf_idx_state["fft"] = i + 1
