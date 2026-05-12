@@ -82,6 +82,25 @@ html, body {
   text-transform: none;
 }
 
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.topbar-fps {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-3);
+  letter-spacing: 0.3px;
+  font-variant-numeric: tabular-nums;
+  text-transform: none;
+}
+.topbar-fps input[type="range"] { width: 90px; vertical-align: middle; }
+.topbar-fps #ws-hz-val { min-width: 44px; text-align: right; }
+
 .badges { display: flex; gap: 6px; }
 
 .badge {

@@ -17,10 +17,20 @@ Rolling BPM derived from the **low-band onset stream** (the same `/audio/onset/l
 Tune the detector by tuning the `low` signal: bandpass edges, smoothing tau, auto-scaler strength, and noise gate all shape what the tracker sees.
 
 Also published as OSC `/audio/bpm <f>` (per audio block). The `mid` and `high` onset streams are pure rising-edge triggers and do not feed BPM.">— BPM</span></h1>
-      <div class="badges">
-        <span class="badge" id="ws-status">disconnected</span>
-        <span class="badge" id="server-fps">srv 0 Hz</span>
-        <span class="badge" id="ui-fps">ui 0 fps</span>
+      <div class="topbar-right">
+        <label class="topbar-fps" title="**UI refresh rate.** Target frame rate for the browser visualization.
+
+Drives both:
+
+- how often the server pushes L/M/H snapshots and FFT frames over WS
+- how often the canvases redraw (throttled to match)
+
+Snaps to standard frame rates: `15 / 24 / 30 / 40 / 60 fps`, capped at 60.">UI refresh rate <input type="range" id="ws-hz" min="0" max="4" step="1" /> <span id="ws-hz-val"></span></label>
+        <div class="badges">
+          <span class="badge" id="ws-status">disconnected</span>
+          <span class="badge" id="server-fps">srv 0 Hz</span>
+          <span class="badge" id="ui-fps">ui 0 fps</span>
+        </div>
       </div>
     </header>
 
@@ -322,18 +332,6 @@ The band signal lives in `[0, 1]`; real percussive hits typically jump by `0.2�
 - **Lower** (`0.02–0.05`) → very permissive; catches soft hits but also fires on room noise.
 - **`0.10`** → default. Rejects most noise-floor flutter while keeping real hits.
 - **Higher** (`0.15–0.30`) → strict; only clearly louder-than-background hits fire. For noisy environments or when only the loudest beats should drive visuals.">noise gate <input type="range" id="onset-abs-floor" min="0" max="50" step="1" /> <span id="onset-abs-floor-val"></span></label>
-        </fieldset>
-
-        <fieldset>
-          <legend>UI refresh rate</legend>
-          <label title="**UI refresh rate.** Target frame rate for the browser visualization.
-
-Drives both:
-
-- how often the server pushes L/M/H snapshots and FFT frames over WS
-- how often the canvases redraw (throttled to match)
-
-Snaps to standard frame rates: `15 / 24 / 30 / 40 / 60 / 90 / 120 fps`, capped at 120.">fps <input type="range" id="ws-hz" min="0" max="6" step="1" /> <span id="ws-hz-val"></span></label>
         </fieldset>
 
         <fieldset>

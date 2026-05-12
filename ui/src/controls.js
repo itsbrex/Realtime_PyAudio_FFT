@@ -322,7 +322,7 @@ export function setupControls() {
   // UI refresh rate — discrete slider snapped to industry-standard frame rates.
   // The same value drives the server-side WS snapshot rate AND the browser's
   // RAF render throttle (set in store.target_ui_fps; main.js reads it).
-  const UI_FPS_STEPS = [15, 24, 30, 40, 60, 90, 120];
+  const UI_FPS_STEPS = [15, 24, 30, 40, 60];
   const wsEl  = document.getElementById("ws-hz");
   const wsLab = document.getElementById("ws-hz-val");
   const nearestFpsIdx = (hz) => {
