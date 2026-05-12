@@ -77,10 +77,18 @@ class FftCfg:
 
 
 @dataclass
-class BeatCfg:
+class OnsetBandCfg:
     sensitivity: float    # K_HIGH multiplier on adaptive threshold
     refractory_s: float   # min inter-onset interval (seconds)
     slow_tau_s: float     # slow envelope tau (seconds)
+    abs_floor: float      # absolute floor on the Schmitt high threshold
+
+
+@dataclass
+class OnsetCfg:
+    low: OnsetBandCfg
+    mid: OnsetBandCfg
+    high: OnsetBandCfg
 
 
 @dataclass
@@ -99,6 +107,7 @@ class OscCfg:
 class UiCfg:
     peak_decay_per_s: float
     layout: dict
+    show_onsets: bool
 
 
 @dataclass
@@ -116,7 +125,7 @@ class Config:
     dsp: DspCfg
     autoscale: AutoscaleCfg
     fft: FftCfg
-    beat: BeatCfg
+    onset: OnsetCfg
     osc: OscCfg
     ws: WsCfg
     ui: UiCfg
@@ -178,21 +187,41 @@ def _build_config(d: dict) -> Config:
         send_raw_db=bool(fd["send_raw_db"]),
     )
 
-    # Beat detector — section is optional (added after the initial schema)
-    # so legacy main.yaml files without a `beat:` block keep working with
-    # the BeatTracker's compiled-in defaults.
-    bd = d.get("beat") or {}
-    beat_defaults = {
-        "sensitivity": 1.8,
-        "refractory_s": 0.25,
-        "slow_tau_s": 0.30,
+    # Per-band onset detector. The legacy single-band `beat:` block (low-band
+    # only) is migrated transparently here: if `onset:` is missing but `beat:`
+    # is present, use it for the low band and seed mid/high with snappier
+    # defaults (shorter refractory + slow tau — snares and hats are sharper
+    # and denser than kicks). On the next config write the new `onset:` shape
+    # is persisted and the `beat:` block disappears.
+    onset_raw = d.get("onset")
+    if not isinstance(onset_raw, dict):
+        legacy = d.get("beat") or {}
+        onset_raw = {
+            "low": {
+                "sensitivity": legacy.get("sensitivity", 1.8),
+                "refractory_s": legacy.get("refractory_s", 0.25),
+                "slow_tau_s": legacy.get("slow_tau_s", 0.30),
+            },
+            "mid":  {"sensitivity": 1.8, "refractory_s": 0.18, "slow_tau_s": 0.20},
+            "high": {"sensitivity": 1.8, "refractory_s": 0.12, "slow_tau_s": 0.15},
+        }
+    onset_defaults = {
+        "low":  {"sensitivity": 1.8, "refractory_s": 0.25, "slow_tau_s": 0.30, "abs_floor": 0.10},
+        "mid":  {"sensitivity": 1.8, "refractory_s": 0.18, "slow_tau_s": 0.20, "abs_floor": 0.10},
+        "high": {"sensitivity": 1.8, "refractory_s": 0.12, "slow_tau_s": 0.15, "abs_floor": 0.10},
     }
-    ok_beat = V.validate_beat(
-        sensitivity=bd.get("sensitivity", beat_defaults["sensitivity"]),
-        refractory_s=bd.get("refractory_s", beat_defaults["refractory_s"]),
-        slow_tau_s=bd.get("slow_tau_s", beat_defaults["slow_tau_s"]),
-    )
-    beat = BeatCfg(**ok_beat)
+    onset_bands = {}
+    for name in ("low", "mid", "high"):
+        b = onset_raw.get(name) or {}
+        dflt = onset_defaults[name]
+        ok = V.validate_onset(
+            sensitivity=b.get("sensitivity", dflt["sensitivity"]),
+            refractory_s=b.get("refractory_s", dflt["refractory_s"]),
+            slow_tau_s=b.get("slow_tau_s", dflt["slow_tau_s"]),
+            abs_floor=b.get("abs_floor", dflt["abs_floor"]),
+        )
+        onset_bands[name] = OnsetBandCfg(**ok)
+    onset = OnsetCfg(**onset_bands)
 
     od = d["osc"]
     dests = [OscDest(host=str(x["host"]), port=int(x["port"])) for x in od["destinations"]]
@@ -211,9 +240,13 @@ def _build_config(d: dict) -> Config:
     ui = UiCfg(
         peak_decay_per_s=V.validate_peak_decay_per_s(ud["peak_decay_per_s"]),
         layout=V.validate_ui_layout(ud["layout"]),
+        # Added after the initial schema; legacy configs without the key
+        # default to OFF (onset squares hidden — matches the user's first-run
+        # expectation of a minimal bars+peak-hold view).
+        show_onsets=bool(ud.get("show_onsets", False)),
     )
 
-    return Config(audio=audio, dsp=dsp, autoscale=autoscale, fft=fft, beat=beat, osc=osc, ws=ws, ui=ui)
+    return Config(audio=audio, dsp=dsp, autoscale=autoscale, fft=fft, onset=onset, osc=osc, ws=ws, ui=ui)
 
 
 def load_config(path: Path | str) -> Config:

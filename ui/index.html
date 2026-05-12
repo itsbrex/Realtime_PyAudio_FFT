@@ -12,11 +12,11 @@
     <header class="topbar">
       <h1>Realtime Audio Server <span id="bpm-readout" class="bpm-readout" title="**Live tempo estimate.**
 
-Rolling BPM from the server-side beat detector running on the post-processed low-band signal (the same `low` value you see on the bars/lines). Reads `— BPM` until a few onsets have accumulated, or after long silence.
+Rolling BPM derived from the **low-band onset stream** (the same `/audio/onset/low` events sent over OSC and shown by the square flash above the L bar). Reads `— BPM` until a few onsets have accumulated, or after long silence.
 
 Tune the detector by tuning the `low` signal: bandpass edges, smoothing tau, auto-scaler strength, and noise gate all shape what the tracker sees.
 
-Also published as OSC `/audio/bpm <f>` (per audio block).">— BPM</span></h1>
+Also published as OSC `/audio/bpm <f>` (per audio block). The `mid` and `high` onset streams are pure rising-edge triggers and do not feed BPM.">— BPM</span></h1>
       <div class="badges">
         <span class="badge" id="ws-status">disconnected</span>
         <span class="badge" id="server-fps">srv 0 Hz</span>
@@ -27,9 +27,11 @@ Also published as OSC `/audio/bpm <f>` (per audio block).">— BPM</span></h1>
     <main class="grid" id="main-grid">
       <section class="viz-grid">
         <div class="viz-card" data-card="bars">
-          <div class="viz-title"><span title="**L/M/H output — sent over OSC.**
+          <div class="viz-title"><span title="**L/M/H output + per-band onset triggers — both sent over OSC.**
 
-The three colored bars (`low`, `mid`, `high`) are the live signal that ships to downstream consumers. The **white peak-hold ticks are visual only** — not transmitted.
+The three colored bars (`low`, `mid`, `high`) are the live signal that ships to downstream consumers. The **white peak-hold ticks are visual only** — not transmitted. The **square above each bar** flashes on each onset detected for that band (server-side detector running on the same band signal — see the Onset detection section in the side panel for tuning).
+
+Each onset is sent over OSC as `/audio/onset/{low,mid,high}` (only on onsets, no `0` filler) and as `low_onset`/`mid_onset`/`high_onset` flags in the WS snapshot.
 
 # OSC
 
@@ -49,7 +51,13 @@ Affects the white peak ticks on this graph **and** on the FFT graph.
 - Smaller → peaks linger longer
 - Larger → peaks fall faster
 
-*Visual only — does not affect DSP or OSC payload.*"><input type="range" id="peak-decay" min="10" max="100" step="1" style="width:80px;vertical-align:middle" /> <span id="peak-decay-val" style="font-size:11px"></span></label></div>
+*Visual only — does not affect DSP or OSC payload.*"><input type="range" id="peak-decay" min="10" max="100" step="1" style="width:80px;vertical-align:middle" /> <span id="peak-decay-val" style="font-size:11px"></span></label> <label class="inline" title="**Display per-band onset squares.**
+
+Shows / hides the three colored squares above the L/M/H bars that flash on each detected onset (low / mid / high).
+
+*Visual only — does NOT affect server-side detection, OSC `/audio/onset/*` events, or WS snapshot fields. The detectors keep running and the wire payload is unchanged regardless of this toggle.*
+
+Off by default — turn on when actively tuning onset parameters or driving the UI itself from the band triggers."><input type="checkbox" id="show-onsets" /> onsets</label></div>
           <canvas id="viz-bars" width="320" height="200"></canvas>
         </div>
         <div class="viz-card" data-card="lines">
@@ -265,36 +273,55 @@ Larger → hat / cymbal sizzle averages into a continuous shimmer. Smaller → e
 Falling-edge τ only — onsets are governed by the attack-τ slider above.">high <input type="range" id="tau-high" min="5" max="2000" step="1" data-log="1" /> <span id="tau-high-val"></span></label>
         </fieldset>
 
-        <fieldset>
-          <legend title="**Beat detection.**
+        <fieldset id="fieldset-onset">
+          <legend title="**Onset detection (per band).**
 
-Server-side onset detector running on the post-processed `low` signal (the same `low` you see on the bars / lines viz). Fires a single `1` pulse on each detected beat — sent over OSC as `/audio/beat` (only on onsets, no `0` filler), and as `beat: 1` in the WS snapshot for the UI flash.
+Three independent server-side onset detectors run on the post-processed `low` / `mid` / `high` signals (the same values you see on the bars / lines viz). Each fires a single `1` pulse on each detected transient — sent over OSC as `/audio/onset/low`, `/audio/onset/mid`, `/audio/onset/high` (only on onsets, no `0` filler), and as `low_onset`/`mid_onset`/`high_onset` in the WS snapshot.
+
+The BPM readout in the page title is derived from the **low** onset stream only.
 
 Tune in two stages:
 
-1. **Shape the `low` signal first.** The detector rides whatever `low` looks like — bandpass edges, smoothing τ, autoscaler strength, noise gate all shape its input. Aim for a signal that visibly pulses on each kick with a clean fall between hits.
-2. **Then dial these knobs** for the trigger sensitivity / debounce / transient shape.">Beat detection</legend>
-          <label title="**Sensitivity** = Schmitt high-threshold multiplier on the rolling novelty average.
+1. **Shape the band's signal first.** The detector rides whatever that band looks like — bandpass edges, smoothing τ, autoscaler strength, noise gate all shape its input. Aim for a signal that visibly pulses on each transient (kick / snare / hat) with a clean fall between hits.
+2. **Pick a band** with the selector below and dial these knobs for that band's trigger sensitivity / debounce / transient shape. Each band has its own three parameters.">Onset detection</legend>
+          <div class="onset-band-select" role="tablist" aria-label="Onset band">
+            <button type="button" data-band="low"  class="onset-band-btn active" role="tab" aria-selected="true">low</button>
+            <button type="button" data-band="mid"  class="onset-band-btn" role="tab" aria-selected="false">mid</button>
+            <button type="button" data-band="high" class="onset-band-btn" role="tab" aria-selected="false">high</button>
+          </div>
+          <label title="**Sensitivity** — how much louder a hit must be than the recent background to count as a beat.
 
-The detector tracks a slow EMA of the half-wave-rectified novelty (`max(0, fast_env − slow_env)`); a beat fires when novelty crosses `sensitivity × that average`.
+Multiplier on a rolling average of recent activity in this band. A value of `2.0` means a hit needs to be at least twice as 'energetic' as what's been happening lately to fire.
 
-- **Lower** (`1.1–1.5`) → more triggers. Picks up softer onsets, but more false fires on flutter.
+- **Lower** (`1.1–1.5`) → more triggers. Catches softer hits, but also more false fires on flutter / noise.
+- **`1.8`** → good default for most percussion-driven music.
 - **Higher** (`2.5–4.0`) → stricter. Only the strongest hits fire.
-- `1.8` is a typical default for kick-driven music.">threshold ×<input type="range" id="beat-sensitivity" min="105" max="400" step="5" /> <span id="beat-sensitivity-val"></span></label>
-          <label title="**Refractory** = minimum time between successive beats.
+- Crank up to `10.0` for ambient / noisy material where even `4.0` still produces stray triggers.">sensitivity <input type="range" id="onset-sensitivity" min="105" max="1000" step="5" /> <span id="onset-sensitivity-val"></span></label>
+          <label title="**Cooldown** — minimum gap between two triggers in this band.
 
-After a beat fires, the detector ignores anything until this much time has passed — even if a second peak shows up. This is the primary defense against double-triggering on a single kick (e.g. body + ring).
+Once a hit fires, the detector ignores everything until this much time has passed. Stops one drum hit from registering as two.
 
-- **Smaller** (`100–150 ms`) → allows fast double-time detection (e.g. drum & bass at 174 BPM = ~345 ms/beat; refractory ≤ 170 ms is needed to avoid losing the half-beat).
-- **Larger** (`350–500 ms`) → guarantees one beat per quarter at 120 BPM and below; safer for messy material but rejects fast tempos.
-- `250 ms` covers up to 240 BPM — sane default for most music.">refractory <input type="range" id="beat-refractory" min="100" max="600" step="5" /> <span id="beat-refractory-val"></span></label>
-          <label title="**Slow envelope τ** = time constant of the 'local DC reference' the novelty subtracts from.
+- **Shorter** (`100–150 ms`) → catches fast patterns like hi-hat 16ths (at 120 BPM, 16ths are ~125 ms apart, so cooldown must be ≤ 120 ms).
+- **Longer** (`350–500 ms`) → safer for messy material; guarantees at most one trigger per beat at moderate tempos, but misses fast subdivisions.
+- Typical: kick ~250 ms, snare ~180 ms, hat ~120 ms.">cooldown <input type="range" id="onset-refractory" min="50" max="600" step="5" /> <span id="onset-refractory-val"></span></label>
+          <label title="**Baseline window** — how far back the detector looks when deciding what counts as 'normal background level' for this band.
 
-Determines what counts as a transient: only rises faster than this τ produce positive novelty. Bigger τ → only very fast snaps register; smaller τ → slow swells also count.
+The detector compares the *current* level to a *baseline* level. Anything rising faster than the baseline can keep up = a hit. This window controls how slowly the baseline reacts.
 
-- **Smaller** (`100–200 ms`) → snappier, only sharp transients count. Tight kick / snare detection.
-- **Larger** (`500–1000 ms`) → broader interpretation; reggae offbeat kicks and slower swells get picked up.
-- `300 ms` is a balanced default.">transient τ <input type="range" id="beat-slow-tau" min="100" max="1000" step="10" data-log="1" /> <span id="beat-slow-tau-val"></span></label>
+- **Longer** (`500–1000 ms`) → baseline reacts slowly, so even gradual swells start to look like hits. Use for songs with slow build-ups or sustained sounds.
+- **Shorter** (`100–200 ms`) → baseline reacts quickly to keep up with the music, so only really sharp snaps stand out. Best for tight kick / snare detection.
+- Typical: kick ~300 ms, snare ~200 ms, hat ~150 ms.">baseline window <input type="range" id="onset-slow-tau" min="50" max="1000" step="10" data-log="1" /> <span id="onset-slow-tau-val"></span></label>
+          <label title="**Noise gate** — absolute minimum 'jump' size needed to fire a trigger, regardless of sensitivity.
+
+Sensitivity is *relative* (how much louder than the background). When the music is quiet, 'twice the background' might still be just room noise. This sets a hard floor underneath: anything smaller is treated as noise no matter what.
+
+The single best knob for rejecting false triggers in quiet passages or noisy rooms.
+
+The band signal lives in `[0, 1]`; real percussive hits typically jump by `0.2–0.5+`.
+
+- **Lower** (`0.02–0.05`) → very permissive; catches soft hits but also fires on room noise.
+- **`0.10`** → default. Rejects most noise-floor flutter while keeping real hits.
+- **Higher** (`0.15–0.30`) → strict; only clearly louder-than-background hits fire. For noisy environments or when only the loudest beats should drive visuals.">noise gate <input type="range" id="onset-abs-floor" min="0" max="50" step="1" /> <span id="onset-abs-floor-val"></span></label>
         </fieldset>
 
         <fieldset>

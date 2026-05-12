@@ -125,12 +125,14 @@ def validate_peak_decay_per_s(v):
     return _finite_float(v, "peak_decay_per_s")
 
 
-def validate_beat(sensitivity=None, refractory_s=None, slow_tau_s=None):
-    """Beat-detector tunables. Hard invariants only:
+def validate_onset(sensitivity=None, refractory_s=None, slow_tau_s=None,
+                   abs_floor=None):
+    """Per-band onset-detector tunables. Hard invariants only:
       - sensitivity > 1.0 (Schmitt high must exceed the slow EMA of novelty
         itself, otherwise the trigger would always be tripped).
       - refractory_s > 0 (zero refractory → a single onset retriggers each block).
       - slow_tau_s > 0 (used as denominator in tau→alpha).
+      - abs_floor >= 0 (finite; 0 means the absolute floor never gates).
     UI sliders enforce taste-level ranges; here we only block crashes.
     """
     out = {}
@@ -140,7 +142,15 @@ def validate_beat(sensitivity=None, refractory_s=None, slow_tau_s=None):
         out["refractory_s"] = _finite_float(refractory_s, "refractory_s", gt=0.0)
     if slow_tau_s is not None:
         out["slow_tau_s"] = _finite_float(slow_tau_s, "slow_tau_s", gt=0.0)
+    if abs_floor is not None:
+        out["abs_floor"] = _finite_float(abs_floor, "abs_floor", ge=0.0)
     return out
+
+
+def validate_onset_band(band):
+    if band not in BAND_NAMES:
+        raise ValueError(f"band must be one of {BAND_NAMES}")
+    return band
 
 
 def validate_ws_snapshot_hz(hz):

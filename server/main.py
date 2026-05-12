@@ -27,11 +27,11 @@ from .audio.ringbuffer import SlotRing
 from .audio.stream import StreamHandle, open_input_stream
 from .config import CANONICAL_CONFIG_PATH, Config, Persister, config_to_dict, load_config
 from .control.dispatcher import Dispatcher
-from .dsp.beat import BeatTracker
 from .dsp.features import AutoScaler, ExpSmoother
 from .dsp.fft import FFTWorker
 from .dsp.fft_postprocess import FFTPostProcessor
 from .dsp.filters import FilterBank
+from .dsp.onset import OnsetTracker
 from .dsp.worker import DSPWorker
 from .io.http_server import StaticHTTPServer
 from .io.osc_sender import OscSender, osc_sender_task
@@ -97,7 +97,7 @@ class App:
         self.filter_bank: FilterBank | None = None
         self.smoother: ExpSmoother | None = None
         self.auto_scaler: AutoScaler | None = None
-        self.beat_tracker: BeatTracker | None = None
+        self.onset_tracker: OnsetTracker | None = None
         self.dsp_worker: DSPWorker | None = None
         self.fft_worker: FFTWorker | None = None
         self.fft_postprocessor: FFTPostProcessor | None = None
@@ -175,23 +175,26 @@ class App:
                 strength=ok.get("strength"),
             )
 
-    def apply_beat(self, ok: dict) -> None:
-        """Apply a validated beat-detector update dict to cfg + tracker.
+    def apply_onset(self, band: str, ok: dict) -> None:
+        """Apply a validated per-band onset-detector update dict to cfg +
+        tracker.
 
-        `ok` may contain any subset of {sensitivity, refractory_s,
-        slow_tau_s}. Missing keys are unchanged. Tracker setters are atomic
-        (single-attribute writes the worker re-reads on next iteration);
-        no lock needed.
+        `band` is one of "low" / "mid" / "high". `ok` may contain any subset
+        of {sensitivity, refractory_s, slow_tau_s}. Missing keys are
+        unchanged. Tracker setters are atomic (single-attribute writes the
+        worker re-reads on next iteration); no lock needed.
         """
-        b = self.cfg.beat
-        for k in ("sensitivity", "refractory_s", "slow_tau_s"):
+        cfg_band = getattr(self.cfg.onset, band)
+        for k in ("sensitivity", "refractory_s", "slow_tau_s", "abs_floor"):
             if k in ok:
-                setattr(b, k, ok[k])
-        if self.beat_tracker is not None and ok:
-            self.beat_tracker.set_params(
+                setattr(cfg_band, k, ok[k])
+        if self.onset_tracker is not None and ok:
+            self.onset_tracker.set_params(
+                band,
                 sensitivity=ok.get("sensitivity"),
                 refractory_s=ok.get("refractory_s"),
                 slow_tau_s=ok.get("slow_tau_s"),
+                abs_floor=ok.get("abs_floor"),
             )
 
     def apply_fft_n_bins(self, n: int) -> None:
@@ -262,12 +265,23 @@ class App:
             db_floor=cfg.fft.db_floor,
             db_ceiling=cfg.fft.db_ceiling,
         )
-        self.beat_tracker = BeatTracker(
+        self.onset_tracker = OnsetTracker(
             sr=sr,
             blocksize=cfg.audio.blocksize,
-            sensitivity=cfg.beat.sensitivity,
-            refractory_s=cfg.beat.refractory_s,
-            slow_tau_s=cfg.beat.slow_tau_s,
+            params={
+                "low":  {"sensitivity": cfg.onset.low.sensitivity,
+                         "refractory_s": cfg.onset.low.refractory_s,
+                         "slow_tau_s": cfg.onset.low.slow_tau_s,
+                         "abs_floor": cfg.onset.low.abs_floor},
+                "mid":  {"sensitivity": cfg.onset.mid.sensitivity,
+                         "refractory_s": cfg.onset.mid.refractory_s,
+                         "slow_tau_s": cfg.onset.mid.slow_tau_s,
+                         "abs_floor": cfg.onset.mid.abs_floor},
+                "high": {"sensitivity": cfg.onset.high.sensitivity,
+                         "refractory_s": cfg.onset.high.refractory_s,
+                         "slow_tau_s": cfg.onset.high.slow_tau_s,
+                         "abs_floor": cfg.onset.high.abs_floor},
+            },
         )
 
     def _signal_dsp_published(self) -> None:
@@ -325,7 +339,7 @@ class App:
             filter_bank=self.filter_bank,
             smoother=self.smoother,
             auto_scaler=self.auto_scaler,
-            beat_tracker=self.beat_tracker,
+            onset_tracker=self.onset_tracker,
             features_store=self.features_store,
             on_publish=self._signal_dsp_published,
             blocksize=cfg.audio.blocksize,
@@ -483,13 +497,29 @@ class App:
                 "strength": cfg.autoscale.strength,
                 "master_gain": cfg.autoscale.master_gain,
             },
-            "beat": {
-                "sensitivity": cfg.beat.sensitivity,
-                "refractory_s": cfg.beat.refractory_s,
-                "slow_tau_s": cfg.beat.slow_tau_s,
+            "onset": {
+                "low": {
+                    "sensitivity": cfg.onset.low.sensitivity,
+                    "refractory_s": cfg.onset.low.refractory_s,
+                    "slow_tau_s": cfg.onset.low.slow_tau_s,
+                    "abs_floor": cfg.onset.low.abs_floor,
+                },
+                "mid": {
+                    "sensitivity": cfg.onset.mid.sensitivity,
+                    "refractory_s": cfg.onset.mid.refractory_s,
+                    "slow_tau_s": cfg.onset.mid.slow_tau_s,
+                    "abs_floor": cfg.onset.mid.abs_floor,
+                },
+                "high": {
+                    "sensitivity": cfg.onset.high.sensitivity,
+                    "refractory_s": cfg.onset.high.refractory_s,
+                    "slow_tau_s": cfg.onset.high.slow_tau_s,
+                    "abs_floor": cfg.onset.high.abs_floor,
+                },
             },
             "ws_snapshot_hz": self.ws.snapshot_hz if self.ws else cfg.ws.snapshot_hz,
             "ui_peak_decay_per_s": cfg.ui.peak_decay_per_s,
+            "ui_show_onsets": cfg.ui.show_onsets,
             "ui_layout": cfg.ui.layout,
             "device": device,
         }
@@ -677,11 +707,11 @@ class App:
                 db_floor=self.cfg.fft.db_floor,
                 db_ceiling=self.cfg.fft.db_ceiling,
             )
-            # Beat tracker: alphas depend on dt = blocksize / sr. User-tuned
-            # params (sensitivity / refractory / slow_tau_s) are persisted on
-            # the instance and survive reconfigure().
-            self.beat_tracker.reconfigure(new_sr, self.cfg.audio.blocksize)
-            self.beat_tracker.reset()
+            # Onset tracker: alphas depend on dt = blocksize / sr. User-tuned
+            # per-band params (sensitivity / refractory / slow_tau_s) are
+            # persisted on the instance and survive reconfigure().
+            self.onset_tracker.reconfigure(new_sr, self.cfg.audio.blocksize)
+            self.onset_tracker.reset()
             # Swap into worker
             self.dsp_worker.filter_bank = self.filter_bank
             self.dsp_worker.smoother = self.smoother

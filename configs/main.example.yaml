@@ -40,10 +40,37 @@ fft:
   peak_smear_oct: 0.3
   tilt_db_per_oct: 3.5
   send_raw_db: false
-beat:
-  sensitivity: 1.8
-  refractory_s: 0.25
-  slow_tau_s: 0.3
+onset:
+  # Per-band defaults are tuned conservatively so room/electronic noise
+  # doesn't constantly trigger. Since L/M/H is auto-scaled to ~[0, 1],
+  # even ambient noise eventually fills the dynamic range — but noise
+  # ramps are slower than real transient onsets. Three knobs gate that:
+  #   - sensitivity (Schmitt threshold ×): higher = stricter (multiplier
+  #     on adaptive novelty EMA — handles loud-vs-quiet material globally)
+  #   - slow_tau_s: SMALLER = stricter (slow envelope catches up faster,
+  #     so only very sharp rises produce positive novelty = fast - slow)
+  #   - abs_floor: HIGHER = stricter (absolute floor on the trigger
+  #     threshold — gates noise-floor flux when adaptive part collapses;
+  #     this is what kicks in for ambient/quiet material where sensitivity
+  #     × thr_avg falls below this value)
+  # Bands get progressively shorter slow_tau because hats/snares have
+  # tighter transients than kicks. Refractory clamps each band's max
+  # trigger rate so a single hit can't ring out as multiple onsets.
+  low:
+    sensitivity: 1.8
+    refractory_s: 0.25
+    slow_tau_s: 0.30
+    abs_floor: 0.10
+  mid:
+    sensitivity: 1.8
+    refractory_s: 0.18
+    slow_tau_s: 0.20
+    abs_floor: 0.10
+  high:
+    sensitivity: 1.8
+    refractory_s: 0.12
+    slow_tau_s: 0.15
+    abs_floor: 0.10
 osc:
   destinations:
   - host: 127.0.0.1
@@ -57,6 +84,7 @@ ws:
   http_port: 8766
 ui:
   peak_decay_per_s: 0.5
+  show_onsets: false
   layout:
     split_x: 0.34536064701337327
     split_y: 0.3863162718337408

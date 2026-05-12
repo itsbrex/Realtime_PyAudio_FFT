@@ -24,7 +24,10 @@ const fft   = makeFft(document.getElementById("viz-fft"));
 onMessage("snapshot", (m) => {
   store.low = m.low; store.mid = m.mid; store.high = m.high;
   store.low_raw = m.low_raw; store.mid_raw = m.mid_raw; store.high_raw = m.high_raw;
-  if (m.beat) store.beat_pulse_t = performance.now();
+  const now = performance.now();
+  if (m.low_onset)  store.low_onset_pulse_t  = now;
+  if (m.mid_onset)  store.mid_onset_pulse_t  = now;
+  if (m.high_onset) store.high_onset_pulse_t = now;
   if (typeof m.bpm === "number") {
     store.bpm = m.bpm;
     const el = document.getElementById("bpm-readout");

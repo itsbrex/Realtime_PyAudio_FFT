@@ -13,11 +13,14 @@ It computes:
   cleaned and auto-scaled into a clean `[0, 1]` signal.
 - **128-bin log-spaced FFT spectrum** *(optional)* — windowed rFFT routed
   through the same auto-scaler pipeline.
-- **Beat onsets + rolling BPM** — onset detector on the post-processed `low`
-  signal (so every UI knob that shapes the visual `low` track also tunes the
-  beat tracker — there's no second pipeline to dial in). Emits a clean
-  rising-edge `/audio/beat` per onset and a slowly-smoothed `/audio/bpm`,
-  octave-folded into `[60, 180]`.
+- **Per-band onset triggers + rolling BPM** — three independent onset
+  detectors running on the post-processed `low` / `mid` / `high` signals (so
+  every UI knob that shapes a band's visible track also tunes its detector —
+  there's no second pipeline to dial in). Emits clean rising-edge
+  `/audio/onset/{low,mid,high}` events per detected transient, each with its
+  own per-band sensitivity / refractory / transient-τ tuning so kicks, snares,
+  and hats can be triggered independently. The **low** stream also feeds a
+  slowly-smoothed `/audio/bpm` octave-folded into `[60, 180]`.
 
 These features are published to:
 
@@ -124,8 +127,8 @@ osc:
 |--------------|------------------------------------------------------------------------------------------------------------|---------------------------------------|-------------------------------------------------------------------------------------------------------------|
 | `/audio/meta`| `sr:i  blocksize:i  n_fft_bins:i  low_lo:f low_hi:f  mid_lo:f mid_hi:f  high_lo:f high_hi:f`               | Once at startup, again on device/FFT/cutoff change | Three independent bandpass edges (Hz). Use this to size your spectrum buffer and learn the actual sample rate the device opened at. |
 | `/audio/lmh` | `low:f  mid:f  high:f`                                                                                     | Every audio block (~187 Hz @ 48k/256) | **Auto-scaled to ~[0, 1]** (peak follower + soft noise gate + tanh). These are the values VJ tools want.    |
-| `/audio/beat`| `1:i`                                                                                                      | One message per detected onset        | **Rising-edge trigger only** — no `0`s are sent. Refractory clamps to ≤ 240 BPM (≥ 250 ms between fires). Onset detection runs on the post-processed `low` signal, so retune the beat tracker by tuning the `low` band until it pulses cleanly on each kick. |
-| `/audio/bpm` | `bpm:f`                                                                                                    | Every audio block (~187 Hz @ 48k/256) | Slowly-smoothed estimate, octave-folded into `[60, 180]`. `0.0` while the tracker hasn't locked yet, or after > 5 s of silence (so a stale tempo doesn't bleed into the gap before the next song). |
+| `/audio/onset/low`<br>`/audio/onset/mid`<br>`/audio/onset/high` | `1:i`                                                              | One message per detected onset on that band | **Rising-edge trigger only** — no `0`s are sent. Each band has its own `sensitivity` / `refractory_s` / `slow_tau_s` so kicks / snares / hats can be triggered independently. Refractory clamps each stream to its own ceiling (default 250 / 180 / 120 ms → ~240 / 333 / 500 onsets/sec). Detection runs on the post-processed band signal — retune by tuning the band until it pulses cleanly on the transients of interest. |
+| `/audio/bpm` | `bpm:f`                                                                                                    | Every audio block (~187 Hz @ 48k/256) | Slowly-smoothed estimate derived from the **low** onset stream (only kick/sub-band events are tempo-shaped), octave-folded into `[60, 180]`. `0.0` while the tracker hasn't locked yet, or after > 5 s of silence (so a stale tempo doesn't bleed into the gap before the next song). |
 | `/audio/fft` | `bin_0:f  bin_1:f  …  bin_{N-1}:f`                                                                         | Every FFT hop (~94 Hz @ hop=512/48k)  | Only sent when **both** `fft.enabled: true` **and** `osc.send_fft: true`. Default: post-processed `[0, 1]` (per-bin port of the L/M/H pipeline — same VJ-friendly semantics). Set `fft.send_raw_db: true` to ship raw dB instead. |
 
 All floats are 32-bit. OSC addresses are flat (no nesting).
@@ -145,7 +148,9 @@ def meta(_, sr, blocksize, n_fft_bins, low_lo, low_hi, mid_lo, mid_hi, high_lo, 
 d = dispatcher.Dispatcher()
 d.map("/audio/lmh", lmh)
 d.map("/audio/meta", meta)
-d.map("/audio/beat", lambda _addr, _one: print("BEAT"))
+d.map("/audio/onset/low",  lambda _addr, _one: print("ONSET low"))
+d.map("/audio/onset/mid",  lambda _addr, _one: print("ONSET mid"))
+d.map("/audio/onset/high", lambda _addr, _one: print("ONSET high"))
 d.map("/audio/bpm", lambda _addr, bpm: None)
 d.map("/audio/fft", lambda _addr, *bins: None)   # n_fft_bins floats
 
@@ -186,8 +191,8 @@ Text frames, JSON-encoded. `type` discriminates the message:
 
 | `type`          | Payload (key fields)                                                                                                        | When                                          |
 |-----------------|------------------------------------------------------------------------------------------------------------------------------|-----------------------------------------------|
-| `meta`          | `sr, blocksize, n_fft_bins, bands{low,mid,high → {lo_hz, hi_hz}}, fft_enabled, fft_db_floor, fft_db_ceiling, fft_f_min, fft_send_raw_db, fft_peak_smear_oct, tau{low,mid,high}, autoscale{tau_attack_s, tau_release_s, noise_floor, strength}, beat{sensitivity, refractory_s, slow_tau_s}, ws_snapshot_hz, device{index, name}` | On connect; re-broadcast after any successful state mutation. Treat this as the source of truth for current settings — the UI reflects every checkbox/slider from the next `meta` instead of trusting local state. |
-| `snapshot`      | `seq, low, mid, high, low_raw, mid_raw, high_raw, beat, bpm, t`                                                              | At `ws_snapshot_hz` (default 60 Hz). `low/mid/high` are auto-scaled `~[0, 1]`; `*_raw` are pre-autoscale smoothed RMS. `beat ∈ {0, 1}` is set on the snapshot following an onset (the broadcaster compares a monotonic onset counter so beats can't fall between WS ticks even when block rate > snapshot rate); `bpm` is the slowly-smoothed tempo, `0` when not yet locked or after > 5 s of silence. |
+| `meta`          | `sr, blocksize, n_fft_bins, bands{low,mid,high → {lo_hz, hi_hz}}, fft_enabled, fft_db_floor, fft_db_ceiling, fft_f_min, fft_send_raw_db, fft_peak_smear_oct, tau{low,mid,high}, autoscale{tau_attack_s, tau_release_s, noise_floor, strength}, onset{low,mid,high → {sensitivity, refractory_s, slow_tau_s}}, ws_snapshot_hz, device{index, name}` | On connect; re-broadcast after any successful state mutation. Treat this as the source of truth for current settings — the UI reflects every checkbox/slider from the next `meta` instead of trusting local state. |
+| `snapshot`      | `seq, low, mid, high, low_raw, mid_raw, high_raw, low_onset, mid_onset, high_onset, bpm, t`                                  | At `ws_snapshot_hz` (default 60 Hz). `low/mid/high` are auto-scaled `~[0, 1]`; `*_raw` are pre-autoscale smoothed RMS. `low_onset` / `mid_onset` / `high_onset ∈ {0, 1}` are set on the snapshot following an onset on the matching band (the broadcaster compares per-band monotonic onset counters, so onsets can't fall between WS ticks even when block rate > snapshot rate); `bpm` is the slowly-smoothed tempo derived from the low-band onset stream, `0` when not yet locked or after > 5 s of silence. |
 | *(binary)*      | `[type=1:u8][reserved:u8][n_bins:u16 LE][float32 × n_bins LE]`                                                                | At FFT hop rate (~94 Hz) when FFT enabled. **Binary frame**, not JSON. Float interpretation depends on `meta.fft_send_raw_db`: `false` (default) → post-processed `[0, 1]`; `true` → raw wire dB with `-1000` sentinels for empty log bins. The same bytes are what `/audio/fft` sends on OSC. |
 | `devices`       | `items: [{index, name, hostapi, default_samplerate, max_input_channels, probed_signal?, probed_at?}]`                        | On connect, and in reply to `list_devices`.   |
 | `presets`       | `items: [{name, saved_at}]`                                                                                                  | On connect, after `save_preset`, in reply to `list_presets`. |
@@ -207,7 +212,7 @@ an `error` reply and **state is unchanged**.
 | `set_autoscale`       | `tau_attack_s?: number, tau_release_s?: number, noise_floor?: number, strength?: number, commit?: bool` | `tau_attack_s ∈ [0.001, 1]` s (peak follower attack, default 0.05). `tau_release_s ∈ [5, 300]` s (release / "rolling window"). `noise_floor ∈ [0, 0.1]` linear RMS. `strength ∈ [0, 1]` (1 = fully auto-scaled, 0 = raw). Any subset; missing fields stay unchanged. Drives BOTH the L/M/H `AutoScaler` and the FFT per-bin `FFTPostProcessor`. |
 | `set_fft_send_raw_db` | `send_raw_db: bool`                                                                              | Selects the FFT stream sent to OSC AND WS. `false` (default): post-processed `[0, 1]`. `true`: raw wire dB. The UI reflects this from the next `meta` and the FFT viz switches its y-axis (dB ↔ scaled) accordingly. |
 | `set_fft_peak_smear`  | `peak_smear_oct: number, commit?: bool`                                                           | `peak_smear_oct ∈ [0, 3]` octaves. Gaussian smear of the per-bin peak follower across the spectrum. `0` = each bin self-normalizes (single-frequency tones over-attenuate); higher = peaks are shared across log-frequency neighborhood so a tone still reads taller than its spectral context. Reflect-padded edges. FFT-only — L/M/H has no spectral neighborhood. |
-| `set_beat`            | `sensitivity?: number, refractory_s?: number, slow_tau_s?: number, commit?: bool`                | Tunes the onset detector. `sensitivity > 1.0` (Schmitt high-threshold multiplier on the adaptive novelty floor; default 1.8 — higher = stricter, fewer triggers). `refractory_s > 0` (minimum inter-onset interval; default 0.25 s ≈ 240 BPM ceiling). `slow_tau_s > 0` (slow envelope tau — what counts as a "transient"; default 0.3 s). At least one field is required. Setters are atomic; no audio glitch. |
+| `set_onset`           | `band: "low" \| "mid" \| "high", sensitivity?: number, refractory_s?: number, slow_tau_s?: number, abs_floor?: number, commit?: bool` | Tunes one band's onset detector. `sensitivity > 1.0` (Schmitt high-threshold multiplier on that band's adaptive novelty floor — higher = stricter). `refractory_s > 0` (minimum inter-onset interval; e.g. 0.25 s ≈ 240 onsets/sec ceiling). `slow_tau_s > 0` (slow envelope tau — what counts as a "transient" at that band's rate). `abs_floor >= 0` (absolute floor on the trigger threshold: high threshold = `max(sensitivity × adaptive_avg, abs_floor)` — the dominant gate when adaptive novelty collapses during quiet/ambient passages; default 0.10 on the `~[0, 1]` band signal). `band` is required; at least one param field is required. Setters are atomic single-element writes the worker re-reads on its next iteration; no audio glitch. |
 | `list_devices`        | `probe?: bool`                                                                                   | Returns a `devices` message. With `probe: true` the server briefly opens each device and reports which produced signal.          |
 | `set_device`          | `index: int`                                                                                     | Hot-switches the input device. Stream is torn down + rebuilt; sample rate may change; filters/FFT/autoscaler re-init.            |
 | `set_n_fft_bins`      | `n: int`                                                                                         | Range `[8, 1024]`. Rebuilds the log-bin map atomically.                                                                          |
@@ -417,9 +422,10 @@ tune via the UI, then drop back to `--no-ws`).
 | Peak-follower release τ   | `60` s         | WS `set_autoscale.tau_release_s` or `configs/main.yaml: autoscale.tau_release_s` |
 | Noise floor               | `0.001` linear RMS (~−60 dBFS) — gates FFT per-bin AND L/M/H per-band (bandwidth-aware: subtracts `noise_floor² · max(1, K_lin/N_log)` from band RMS² — "one FFT-viz log bin's worth of floor noise" — so anything visible on the FFT survives the L/M/H gate) | WS `set_autoscale.noise_floor` |
 | Autoscale strength        | `1.0`          | WS `set_autoscale.strength` (0 = pass-through raw, 1 = fully scaled) |
-| Beat sensitivity          | `1.8`          | WS `set_beat.sensitivity` or `configs/main.yaml: beat.sensitivity` (Schmitt high-threshold multiplier; higher = stricter) |
-| Beat refractory           | `0.25` s       | WS `set_beat.refractory_s` or `configs/main.yaml: beat.refractory_s` (= 240 BPM detection ceiling) |
-| Beat slow envelope τ      | `0.3` s        | WS `set_beat.slow_tau_s` or `configs/main.yaml: beat.slow_tau_s` (sets what counts as a transient) |
+| Onset sensitivity (per band)    | low/mid/high `3.0 / 3.0 / 3.0` | WS `set_onset {band, sensitivity}` or `configs/main.yaml: onset.{low,mid,high}.sensitivity` (Schmitt high-threshold multiplier on that band's adaptive novelty floor; higher = stricter) |
+| Onset refractory (per band)     | `0.25 / 0.18 / 0.12` s          | WS `set_onset {band, refractory_s}` or `configs/main.yaml: onset.{low,mid,high}.refractory_s` (minimum inter-onset interval; tighter for higher bands since hats are denser than kicks) |
+| Onset slow envelope τ (per band)| `0.20 / 0.14 / 0.10` s          | WS `set_onset {band, slow_tau_s}` or `configs/main.yaml: onset.{low,mid,high}.slow_tau_s` (what counts as a transient at that band's rate; smaller = stricter) |
+| Onset min novelty (per band)    | `0.10` linear (10% of full-scale band signal) | WS `set_onset {band, abs_floor}` or `configs/main.yaml: onset.{low,mid,high}.abs_floor` (absolute floor on the trigger threshold — the dominant gate when adaptive novelty is small in quiet/ambient material). |
 | WS snapshot rate          | `60` Hz        | WS `set_ws_snapshot_hz` or `configs/main.yaml: ws.snapshot_hz` |
 
 ---

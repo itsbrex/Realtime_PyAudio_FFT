@@ -241,27 +241,83 @@ export function setupControls() {
   strengthEl.addEventListener("pointerup", () => { if (strDragging) { updateStrength(true); strDragging = false; } });
   const strengthCtl = { setValue: (v) => { strengthEl.value = String(Math.round(v * 100)); strengthLab.textContent = `${Math.round(v * 100)}%`; } };
 
-  // Beat detection — sensitivity / refractory / slow envelope τ.
-  // - sensitivity: slider value is hundredths (105..400 → 1.05..4.00)
-  // - refractory:  slider value is milliseconds (100..600 → 0.10..0.60 s)
-  // - slow τ:      log-scale ms (100..1000 → 0.10..1.00 s)
-  const beatSensEl = document.getElementById("beat-sensitivity");
-  const beatSensLab = document.getElementById("beat-sensitivity-val");
-  const beatSensCtl = bindDragAware(beatSensEl, beatSensLab,
-    (v) => `${(v / 100).toFixed(2)}`,
-    (v) => ({ type: "set_beat", sensitivity: v / 100 }));
-
-  const beatRefrEl = document.getElementById("beat-refractory");
-  const beatRefrLab = document.getElementById("beat-refractory-val");
-  const beatRefrCtl = bindDragAware(beatRefrEl, beatRefrLab,
-    (v) => `${Math.round(v)} ms`,
-    (v) => ({ type: "set_beat", refractory_s: v / 1000 }));
-
-  const beatTauEl = document.getElementById("beat-slow-tau");
-  const beatTauLab = document.getElementById("beat-slow-tau-val");
-  const beatTauCtl = bindDragAware(beatTauEl, beatTauLab,
-    (v) => `${Math.round(v)} ms`,
-    (v) => ({ type: "set_beat", slow_tau_s: v / 1000 }));
+  // Onset detection — sensitivity / refractory / slow envelope τ, PER BAND.
+  // One set of sliders edits the currently selected band; the band selector
+  // (3 tabs) switches which band's params they read/write. Per-band state is
+  // kept in `onsetCfg` and pushed to the server with a `set_onset` message
+  // tagged with the current band. Server is authoritative — meta payloads
+  // refresh `onsetCfg` and re-render the sliders.
+  // Slider encoding:
+  // - sensitivity: hundredths (105..1000 → 1.05..10.00)
+  // - refractory:  milliseconds (50..600 → 0.05..0.60 s)
+  // - slow τ:      log-scale ms (50..1000 → 0.05..1.00 s)
+  // - abs_floor:   hundredths of full-scale novelty (0..50 → 0.00..0.50)
+  const onsetSensEl = document.getElementById("onset-sensitivity");
+  const onsetSensLab = document.getElementById("onset-sensitivity-val");
+  const onsetRefrEl = document.getElementById("onset-refractory");
+  const onsetRefrLab = document.getElementById("onset-refractory-val");
+  const onsetTauEl = document.getElementById("onset-slow-tau");
+  const onsetTauLab = document.getElementById("onset-slow-tau-val");
+  const onsetFloorEl = document.getElementById("onset-abs-floor");
+  const onsetFloorLab = document.getElementById("onset-abs-floor-val");
+  const fmtSens = (v) => `${(v / 100).toFixed(2)}`;
+  const fmtOnsetFloor = (v) => (v <= 0 ? "off" : `${(v / 100).toFixed(2)}`);
+  // Per-band cached params (live mirror of server-side state, updated on
+  // every `meta` payload). All four are seeded from cfg defaults until the
+  // first meta arrives.
+  const onsetCfg = {
+    low:  { sensitivity: 1.8, refractory_s: 0.25, slow_tau_s: 0.30, abs_floor: 0.10 },
+    mid:  { sensitivity: 1.8, refractory_s: 0.18, slow_tau_s: 0.20, abs_floor: 0.10 },
+    high: { sensitivity: 1.8, refractory_s: 0.12, slow_tau_s: 0.15, abs_floor: 0.10 },
+  };
+  let onsetBand = "low";
+  const onsetBandBtns = Array.from(document.querySelectorAll(".onset-band-btn"));
+  function renderOnsetSliders() {
+    const c = onsetCfg[onsetBand];
+    onsetSensEl.value = String(Math.round(c.sensitivity * 100));
+    onsetSensLab.textContent = fmtSens(onsetSensEl.value);
+    onsetRefrEl.value = String(Math.round(c.refractory_s * 1000));
+    onsetRefrLab.textContent = `${Math.round(parseFloat(onsetRefrEl.value))} ms`;
+    writeSlider(onsetTauEl, Math.round(c.slow_tau_s * 1000));
+    onsetTauLab.textContent = `${Math.round(readSlider(onsetTauEl))} ms`;
+    onsetFloorEl.value = String(Math.round(c.abs_floor * 100));
+    onsetFloorLab.textContent = fmtOnsetFloor(onsetFloorEl.value);
+  }
+  function setOnsetBand(b) {
+    if (b === onsetBand) return;
+    onsetBand = b;
+    for (const btn of onsetBandBtns) {
+      const active = btn.dataset.band === b;
+      btn.classList.toggle("active", active);
+      btn.setAttribute("aria-selected", active ? "true" : "false");
+    }
+    renderOnsetSliders();
+  }
+  for (const btn of onsetBandBtns) {
+    btn.addEventListener("click", () => setOnsetBand(btn.dataset.band));
+  }
+  // Drag-aware slider wiring. We can't use bindDragAware directly because
+  // the message body depends on `onsetBand` at SEND time (not at bind time).
+  function bindOnsetSlider(el, label, fmt, paramKey, toServer) {
+    let dragging = false;
+    const apply = (commit) => {
+      const sliderVal = readSlider(el);
+      label.textContent = fmt(sliderVal);
+      const serverVal = toServer(sliderVal);
+      onsetCfg[onsetBand][paramKey] = serverVal;
+      send({ type: "set_onset", band: onsetBand, [paramKey]: serverVal, commit });
+    };
+    el.addEventListener("input", () => { dragging = true; apply(false); });
+    el.addEventListener("change", () => { apply(true); dragging = false; });
+    el.addEventListener("pointerup", () => { if (dragging) { apply(true); dragging = false; } });
+  }
+  bindOnsetSlider(onsetSensEl, onsetSensLab, fmtSens, "sensitivity", (v) => v / 100);
+  bindOnsetSlider(onsetRefrEl, onsetRefrLab, (v) => `${Math.round(v)} ms`,
+                  "refractory_s", (v) => v / 1000);
+  bindOnsetSlider(onsetTauEl, onsetTauLab, (v) => `${Math.round(v)} ms`,
+                  "slow_tau_s", (v) => v / 1000);
+  bindOnsetSlider(onsetFloorEl, onsetFloorLab, fmtOnsetFloor,
+                  "abs_floor", (v) => v / 100);
 
   // UI refresh rate — discrete slider snapped to industry-standard frame rates.
   // The same value drives the server-side WS snapshot rate AND the browser's
@@ -341,6 +397,16 @@ export function setupControls() {
     (v) => ({ type: "set_filter_order", order: v }),
   );
 
+  // Onset-squares display toggle. Visibility-only — server detection / OSC /
+  // WS payload are unaffected. Server-authoritative: toggle sends a
+  // set_show_onsets message; the value reflected back via meta.ui_show_onsets
+  // drives the actual store flag (so reload + persistence behave correctly).
+  const showOnsetsToggle = document.getElementById("show-onsets");
+  showOnsetsToggle.addEventListener("change", () => {
+    send({ type: "set_show_onsets", show_onsets: showOnsetsToggle.checked });
+  });
+  const showOnsetsCtl = { setValue: (v) => { showOnsetsToggle.checked = !!v; } };
+
   // FFT toggle
   const fftToggle = document.getElementById("fft-toggle");
   fftToggle.addEventListener("change", () => {
@@ -414,10 +480,21 @@ export function setupControls() {
       masterCtl.setValue(m.autoscale.master_gain ?? 1.0);
       wsCtl.setValue(m.ws_snapshot_hz || 60);
       peakDecayCtl.setValue(m.ui_peak_decay_per_s ?? 0.6);
-      const beat = m.beat || {};
-      beatSensCtl.setValue(Math.round((beat.sensitivity ?? 1.8) * 100));
-      beatRefrCtl.setValue(Math.round((beat.refractory_s ?? 0.25) * 1000));
-      beatTauCtl.setValue(Math.round((beat.slow_tau_s ?? 0.30) * 1000));
+      if (m.ui_show_onsets !== undefined) {
+        store.show_onsets = !!m.ui_show_onsets;
+        showOnsetsCtl.setValue(!!m.ui_show_onsets);
+      }
+      const onset = m.onset || {};
+      for (const b of ["low", "mid", "high"]) {
+        const src = onset[b];
+        if (src) {
+          onsetCfg[b].sensitivity  = src.sensitivity  ?? onsetCfg[b].sensitivity;
+          onsetCfg[b].refractory_s = src.refractory_s ?? onsetCfg[b].refractory_s;
+          onsetCfg[b].slow_tau_s   = src.slow_tau_s   ?? onsetCfg[b].slow_tau_s;
+          onsetCfg[b].abs_floor    = src.abs_floor    ?? onsetCfg[b].abs_floor;
+        }
+      }
+      renderOnsetSliders();
       if (m.filter_order !== undefined) filterOrderCtl.setValue(m.filter_order);
       fftToggle.checked = !!m.fft_enabled;
       if (m.fft_send_raw_db !== undefined) fftRawDbCtl.setValue(!!m.fft_send_raw_db);

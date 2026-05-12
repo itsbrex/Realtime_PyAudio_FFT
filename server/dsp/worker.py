@@ -7,9 +7,9 @@ import time
 
 import numpy as np
 
-from .beat import BeatTracker
 from .features import ExpSmoother, AutoScaler, block_rms
 from .filters import FilterBank
+from .onset import OnsetTracker
 
 log = logging.getLogger(__name__)
 
@@ -19,7 +19,7 @@ MAX_DSP_BACKLOG_BLOCKS = 4  # ~21 ms at 48k/256
 class DSPWorker(threading.Thread):
     def __init__(self, ring, dsp_event: threading.Event, stop_flag: threading.Event,
                  filter_bank: FilterBank, smoother: ExpSmoother, auto_scaler: AutoScaler,
-                 beat_tracker: BeatTracker,
+                 onset_tracker: OnsetTracker,
                  features_store, on_publish, blocksize: int, perf_ring: np.ndarray):
         super().__init__(name="dsp-worker", daemon=True)
         self.ring = ring
@@ -28,12 +28,13 @@ class DSPWorker(threading.Thread):
         self.filter_bank = filter_bank
         self.smoother = smoother
         self.auto_scaler = auto_scaler
-        self.beat_tracker = beat_tracker
+        self.onset_tracker = onset_tracker
         self.features_store = features_store
         self.on_publish = on_publish  # threadsafe callback (e.g. set sender_event)
         self.blocksize = blocksize
         self.dsp_in = np.zeros(blocksize, dtype=np.float32)
         self.scaled_buf = np.zeros(3, dtype=np.float64)
+        self.onsets_buf = np.zeros(3, dtype=np.int8)
         self.read_block_idx = 0
         self.dsp_drops = 0
         self.perf_ring = perf_ring
@@ -82,20 +83,21 @@ class DSPWorker(threading.Thread):
                     rms_hi = block_rms(hi)
                     self.smoother.update(rms_lo, rms_md, rms_hi)
                     self.auto_scaler.update(self.smoother.values, self.scaled_buf)
-                    # Beat detection runs on the FULLY post-processed `low`
-                    # signal (after smoother + autoscaler + strength blend)
+                    # Onset detection runs on the FULLY post-processed L/M/H
+                    # signals (after smoother + autoscaler + strength blend)
                     # so that the same UI knobs that shape the bars/lines —
                     # bandpass edges, smoothing, autoscale strength, noise
-                    # gate — also tune the beat tracker. The user dials the
-                    # `low` signal in until it 'pulses' cleanly on each
-                    # kick; the tracker rides that exact signal.
-                    beat, bpm = self.beat_tracker.update(float(self.scaled_buf[0]))
+                    # gate — also tune the trackers. The user dials each
+                    # band's signal in until it 'pulses' cleanly on the
+                    # transients of interest (kicks / snares / hats); the
+                    # detectors ride those exact signals.
+                    bpm = self.onset_tracker.update(self.scaled_buf, self.onsets_buf)
                     # Pass numpy refs straight through; FeatureStore copies
                     # into its own preallocated buffers under the lock so we
                     # don't allocate per-block tuples here.
                     self.features_store.publish(
                         self.smoother.values, self.scaled_buf,
-                        beat, self.beat_tracker.beat_count, bpm,
+                        self.onsets_buf, self.onset_tracker.onset_count, bpm,
                         t_recv_ns,
                     )
                     try:

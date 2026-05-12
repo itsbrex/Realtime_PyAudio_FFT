@@ -4,10 +4,14 @@ export const store = {
   // Live signal
   low: 0, mid: 0, high: 0,
   low_raw: 0, mid_raw: 0, high_raw: 0,
-  // Beat detection (server-side onset detector on the low band).
-  // `beat_pulse_t` is the performance.now() timestamp of the most recent
-  // beat=1 snapshot — visualizers use this to drive a decay-based flash.
-  beat_pulse_t: -Infinity,
+  // Per-band onset detection (server-side onset detector running
+  // independently on each of low/mid/high). `*_onset_pulse_t` is the
+  // performance.now() timestamp of the most recent <band>_onset=1 snapshot
+  // — visualizers use these to drive band-specific decay-based flashes.
+  // `bpm` is derived from the low-band onset stream.
+  low_onset_pulse_t:  -Infinity,
+  mid_onset_pulse_t:  -Infinity,
+  high_onset_pulse_t: -Infinity,
   bpm: 0,
   fft_bins: null, // Float32Array
   fft_db_floor: -60,
@@ -49,6 +53,12 @@ export const store = {
   // Visual peak-hold decay rate (units / second) for both the L/M/H bars and
   // the FFT viz. Server-authoritative — mirrored from meta.ui_peak_decay_per_s.
   peak_decay_per_s: 0.6,
+
+  // Whether to render the per-band onset squares above the L/M/H bars. UI
+  // visibility toggle — does NOT affect server-side detection, OSC, or WS
+  // payload (those run unconditionally). Server-authoritative — mirrored
+  // from meta.ui_show_onsets and persisted to ui.show_onsets in YAML.
+  show_onsets: false,
 
   // Visual history window (seconds) for the L/M/H rolling-lines chart. UI-only
   // — not persisted, not sent to the server. Range: 5..30s.

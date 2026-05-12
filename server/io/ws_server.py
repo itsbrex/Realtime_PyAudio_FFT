@@ -193,7 +193,7 @@ class WSServer:
     async def _broadcast_loop(self):
         last_feat_seq = 0
         last_fft_seq = 0
-        last_beat_count = 0
+        last_onset_counts = (0, 0, 0)
         while not self._stop.is_set():
             await asyncio.sleep(1.0 / max(self._snapshot_hz, 1))
             if self._stop.is_set():
@@ -202,17 +202,19 @@ class WSServer:
             if not self.clients:
                 continue
             # L/M/H snapshot
-            seq, raw, scaled, _t, _beat_block, beat_count, bpm = self.features_store.read()
+            seq, raw, scaled, _t, _onsets_block, onset_counts, bpm = self.features_store.read()
             if seq != last_feat_seq:
                 last_feat_seq = seq
                 g = self.get_master_gain()
-                # Beat detection runs at audio-block rate (~187 Hz at 48k/256)
-                # while WS broadcasts at snapshot_hz (default 60 Hz). The per-
-                # block beat pulse can fall between two snapshots and be missed
-                # entirely. Compare the monotonic beat_count instead so each
-                # onset triggers exactly one snapshot with beat=1.
-                beat = 1 if beat_count != last_beat_count else 0
-                last_beat_count = beat_count
+                # Onset detection runs at audio-block rate (~187 Hz at 48k/256)
+                # while WS broadcasts at snapshot_hz (default 60 Hz). Per-band
+                # onset pulses can fall between two snapshots and be missed.
+                # Compare the monotonic per-band counters instead so each onset
+                # triggers exactly one snapshot with that band's flag set.
+                o_lo = 1 if onset_counts[0] != last_onset_counts[0] else 0
+                o_md = 1 if onset_counts[1] != last_onset_counts[1] else 0
+                o_hi = 1 if onset_counts[2] != last_onset_counts[2] else 0
+                last_onset_counts = onset_counts
                 msg = {
                     "type": "snapshot",
                     "seq": seq,
@@ -222,7 +224,9 @@ class WSServer:
                     "low_raw": raw[0],
                     "mid_raw": raw[1],
                     "high_raw": raw[2],
-                    "beat": beat,
+                    "low_onset": o_lo,
+                    "mid_onset": o_md,
+                    "high_onset": o_hi,
                     "bpm": bpm,
                     "t": self._server_ms(),
                 }

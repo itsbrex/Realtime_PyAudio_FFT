@@ -191,7 +191,13 @@ class Dispatcher:
         d = data.get("dsp", {}) or {}
         f = data.get("fft", {}) or {}
         a = data.get("autoscale", {}) or {}
-        beat = data.get("beat", {}) or {}
+        onset = data.get("onset")
+        if not isinstance(onset, dict):
+            # Legacy single-band `beat:` block — port to low-band onset; leave
+            # mid/high untouched so the active config's per-band tuning isn't
+            # overwritten by a preset that only knew about the old shape.
+            legacy = data.get("beat", {}) or {}
+            onset = {"low": legacy} if legacy else {}
 
         with _preset_section("dsp.bands", applied):
             bands_raw = {k: d.get(k) for k in ("low", "mid", "high") if isinstance(d.get(k), dict)}
@@ -251,15 +257,23 @@ class Dispatcher:
                 raise _SkipSection
             self.app.apply_fft_tilt(V.validate_fft_tilt_db_per_oct(f["tilt_db_per_oct"]))
 
-        with _preset_section("beat", applied):
-            ok = V.validate_beat(
-                sensitivity=beat.get("sensitivity"),
-                refractory_s=beat.get("refractory_s"),
-                slow_tau_s=beat.get("slow_tau_s"),
-            )
-            if not ok:
+        with _preset_section("onset", applied):
+            any_applied = False
+            for band in ("low", "mid", "high"):
+                b = onset.get(band)
+                if not isinstance(b, dict):
+                    continue
+                ok = V.validate_onset(
+                    sensitivity=b.get("sensitivity"),
+                    refractory_s=b.get("refractory_s"),
+                    slow_tau_s=b.get("slow_tau_s"),
+                    abs_floor=b.get("abs_floor"),
+                )
+                if ok:
+                    self.app.apply_onset(band, ok)
+                    any_applied = True
+            if not any_applied:
                 raise _SkipSection
-            self.app.apply_beat(ok)
 
         if not applied:
             raise ValueError(f"preset {name!r} produced no valid fields")
@@ -293,6 +307,11 @@ class Dispatcher:
         self.app.persister.request(commit=commit)
         return [], [{"type": "meta", **self.app.snapshot_meta()}]
 
+    async def _set_show_onsets(self, msg):
+        self.app.cfg.ui.show_onsets = bool(msg.get("show_onsets", False))
+        self.app.persister.request(commit=True)
+        return [], [{"type": "meta", **self.app.snapshot_meta()}]
+
     async def _set_fft_tilt(self, msg):
         commit = bool(msg.get("commit", True))
         v = V.validate_fft_tilt_db_per_oct(msg.get("tilt_db_per_oct"))
@@ -307,16 +326,18 @@ class Dispatcher:
         self.app.persister.request(commit=commit)
         return [], [{"type": "meta", **self.app.snapshot_meta()}]
 
-    async def _set_beat(self, msg):
+    async def _set_onset(self, msg):
         commit = bool(msg.get("commit", True))
-        ok = V.validate_beat(
+        band = V.validate_onset_band(msg.get("band"))
+        ok = V.validate_onset(
             sensitivity=msg.get("sensitivity"),
             refractory_s=msg.get("refractory_s"),
             slow_tau_s=msg.get("slow_tau_s"),
+            abs_floor=msg.get("abs_floor"),
         )
         if not ok:
-            raise ValueError("set_beat needs at least one of sensitivity / refractory_s / slow_tau_s")
-        self.app.apply_beat(ok)
+            raise ValueError("set_onset needs at least one of sensitivity / refractory_s / slow_tau_s / abs_floor")
+        self.app.apply_onset(band, ok)
         self.app.persister.request(commit=commit)
         return [], [{"type": "meta", **self.app.snapshot_meta()}]
 
@@ -332,9 +353,10 @@ class Dispatcher:
         "set_fft_send_raw_db": _set_fft_send_raw_db,
         "set_fft_peak_smear": _set_fft_peak_smear,
         "set_fft_tilt": _set_fft_tilt,
-        "set_beat": _set_beat,
+        "set_onset": _set_onset,
         "set_filter_order": _set_filter_order,
         "set_peak_decay": _set_peak_decay,
+        "set_show_onsets": _set_show_onsets,
         "set_ui_layout": _set_ui_layout,
         "list_presets": _list_presets,
         "save_preset": _save_preset,

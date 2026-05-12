@@ -22,14 +22,21 @@ _LMH_TEMPLATE = b"/audio/lmh\x00\x00,fff\x00\x00\x00\x00" + b"\x00" * 12
 _LMH_FLOAT_OFFSET = 20
 _LMH_PACK = struct.Struct("!fff").pack_into
 
-# Pre-encoded "/audio/beat ,i <int=1>". Beat is sent ONLY on onset blocks
-# (no zero pulses), so the value is always 1 and the whole packet is a
-# constant — no per-send packing.
-# "/audio/beat" (11 bytes) + NUL padding to 12 (1 NUL) = 12.
-# ",i" (2 bytes) + NUL padding to 4 (2 NULs) = 4.
-# int32 BE = 4 bytes (value 1 = "\x00\x00\x00\x01").
-# Total: 20 bytes.
-_BEAT_PACKET = b"/audio/beat\x00,i\x00\x00\x00\x00\x00\x01"
+# Pre-encoded "/audio/onset/<band> ,i <int=1>" packets. Each onset is sent
+# ONLY on onset blocks (no zero pulses), so the value is always 1 and the
+# whole packet is constant per band — no per-send packing.
+#
+# OSC string padding: pad to a multiple of 4 bytes with at least one NUL.
+#   - "/audio/onset/low"  = 16 chars  → 4 NULs → 20 bytes address
+#   - "/audio/onset/mid"  = 16 chars  → 4 NULs → 20 bytes address
+#   - "/audio/onset/high" = 17 chars  → 3 NULs → 20 bytes address
+# Type tag ",i" = 2 chars → 2 NULs → 4 bytes.
+# int32 BE = 4 bytes (value 1 = "\x00\x00\x00\x01"). Total: 28 bytes per packet.
+_ONSET_PACKETS = (
+    b"/audio/onset/low\x00\x00\x00\x00,i\x00\x00\x00\x00\x00\x01",   # 0 = low
+    b"/audio/onset/mid\x00\x00\x00\x00,i\x00\x00\x00\x00\x00\x01",   # 1 = mid
+    b"/audio/onset/high\x00\x00\x00,i\x00\x00\x00\x00\x00\x01",      # 2 = high
+)
 
 # Pre-encoded "/audio/bpm ,f <f>". Float arg is mutated in place.
 # "/audio/bpm" (10 bytes) + NUL padding to 12 (2 NULs) = 12.
@@ -85,17 +92,18 @@ class OscSender:
             except Exception as e:
                 log.debug("osc lmh send failed: %s", e)
 
-    def send_beat(self) -> None:
-        """Sends `/audio/beat 1`. Constant packet — no packing needed.
-        Called only on onset blocks; absence of a beat is silence on this
-        address (no `0`s sent), giving downstream consumers a clean
-        rising-edge trigger semantic."""
+    def send_onset(self, band_idx: int) -> None:
+        """Sends `/audio/onset/{low,mid,high} 1`. Constant packet — no
+        packing needed. Called only on onset blocks; absence of a packet on
+        an address is silence on that band (no `0`s sent), giving downstream
+        consumers a clean rising-edge trigger semantic."""
+        pkt = _ONSET_PACKETS[band_idx]
         sock = self._udp_sock
         for addr in self._addrs:
             try:
-                sock.sendto(_BEAT_PACKET, addr)
+                sock.sendto(pkt, addr)
             except Exception as e:
-                log.debug("osc beat send failed: %s", e)
+                log.debug("osc onset send failed: %s", e)
 
     def send_bpm(self, bpm: float) -> None:
         """Sends `/audio/bpm <f>`. Per-block; cheap (4-byte float pack +
@@ -177,14 +185,15 @@ async def osc_sender_task(stop, sender_event: asyncio.Event, sender: OscSender,
         sender_event.clear()
         if stop.is_set():
             return
-        seq, t_recv_ns, beat, bpm = features_store.read_scaled_into(scaled_scratch)
+        seq, t_recv_ns, onsets, bpm = features_store.read_scaled_into(scaled_scratch)
         if seq != last_seq:
             last_seq = seq
             g = get_master_gain()
             sender.send_lmh(scaled_scratch[0] * g, scaled_scratch[1] * g, scaled_scratch[2] * g)
             sender.send_bpm(bpm)
-            if beat:
-                sender.send_beat()
+            if onsets[0]: sender.send_onset(0)
+            if onsets[1]: sender.send_onset(1)
+            if onsets[2]: sender.send_onset(2)
             if perf_lmh_e2e is not None and t_recv_ns:
                 latency = time.perf_counter_ns() - t_recv_ns
                 if latency > 0:
