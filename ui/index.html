@@ -54,7 +54,7 @@ Each onset is sent over OSC as `/audio/onset/{low,mid,high}` (only on onsets, no
 
 # WebSocket
 
-Same values are also published in the JSON `snapshot` frames on `ws://127.0.0.1:8765` (field `scaled.{low,mid,high}`).">L/M/H bars + peak hold</span> <label class="inline" title="**Peak-hold decay rate** (units / sec).
+Same values are also published in the JSON `snapshot` frames on `ws://127.0.0.1:8765` (field `scaled.{low,mid,high}`).">Band energies</span> <label class="inline" title="**Peak-hold decay rate** (units / sec).
 
 Affects the white peak ticks on this graph **and** on the FFT graph.
 
@@ -98,7 +98,7 @@ How far back the rolling chart extends. Larger values pack more time into the sa
 
 The disc, tint, and sparkles are a decorative reactive scene driven from the same L/M/H values as the other graphs. Nothing here is transmitted: no separate OSC address, no separate WS payload.
 
-To consume the underlying signal, use `/audio/lmh` (see the bars or rolling-lines tooltips).">L/M/H scene</span></div>
+To consume the underlying signal, use `/audio/lmh` (see the bars or rolling-lines tooltips).">L/M/H Scene Visualizer</span></div>
           <canvas id="viz-scene" width="640" height="200"></canvas>
         </div>
         <div class="viz-card" data-card="fft">
