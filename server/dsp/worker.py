@@ -11,6 +11,7 @@ from .features import ExpSmoother, AutoScaler, block_rms
 from .filters import FilterBank
 from .onset import OnsetTracker
 from ..io.osc_publisher import OscPublisher
+from ..priority import boost_current_thread
 
 log = logging.getLogger(__name__)
 
@@ -51,6 +52,7 @@ class DSPWorker(threading.Thread):
         self.read_block_idx = 0
 
     def run(self) -> None:
+        boost_current_thread("dsp-worker")
         while True:
             if not self.dsp_event.wait(timeout=0.1):
                 if self.stop_flag.is_set():

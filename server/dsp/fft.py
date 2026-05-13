@@ -8,6 +8,7 @@ import time
 import numpy as np
 
 from ..io.osc_publisher import OscPublisher
+from ..priority import boost_current_thread
 
 log = logging.getLogger(__name__)
 
@@ -178,6 +179,7 @@ class FFTWorker(threading.Thread):
             self.read_block_idx = 0
 
     def run(self) -> None:
+        boost_current_thread("fft-worker")
         while True:
             self.fft_event.wait(timeout=0.1)
             if self.stop_flag.is_set():

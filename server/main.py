@@ -38,6 +38,7 @@ from .io.osc_publisher import OscPublisher
 from .io.osc_sender import OscSender
 from .io.stores import FFTStore, FeatureStore
 from .io.ws_server import WSServer
+from .priority import boost_current_thread
 
 log = logging.getLogger(__name__)
 
@@ -838,6 +839,10 @@ def main(argv=None):
         level=getattr(logging, args.log_level.upper(), logging.INFO),
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
     )
+    # Lift the main thread (which becomes the asyncio loop thread, running
+    # the OSC sender / WS broadcaster / dispatcher). Best-effort; no-ops on
+    # platforms / permissions where it can't apply.
+    boost_current_thread("main")
     config_path = _resolve_config_path(args.config)
     _migrate_legacy_config_layout(config_path)
     if not config_path.exists() and args.config is None:
